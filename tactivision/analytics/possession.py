@@ -5,10 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-import numpy as np
-
 from tactivision.config.settings import Settings
-from tactivision.tracking.tracker import TrackedFrame
+from tactivision.tracking.schema import FrameTracks, ObjectRole
 
 
 @dataclass
@@ -25,6 +23,11 @@ class PossessionState:
     """Ball center in image coordinates, if detected."""
 
 
+def _bbox_center(xyxy: tuple[float, float, float, float]) -> tuple[float, float]:
+    x1, y1, x2, y2 = xyxy
+    return (0.5 * (x1 + x2), 0.5 * (y1 + y2))
+
+
 class PossessionEstimator:
     """Find ball detection, nearest player within radius, map to team."""
 
@@ -36,16 +39,41 @@ class PossessionEstimator:
 
     def update(
         self,
-        frame: np.ndarray,
-        tracked: TrackedFrame,
+        _frame: np.ndarray,
+        tracks: FrameTracks,
         track_to_team: dict[int, int],
-        ball_class_id: int = 32,
     ) -> PossessionState:
         """
-        Compute possession for the current frame.
+        Compute possession for the current frame using semantic roles.
 
-        ``ball_class_id`` is COCO ball class when using default YOLO COCO weights;
-        override when using a custom football dataset.
+        Uses :class:`~tactivision.tracking.schema.ObjectRole` ``BALL`` and ``PLAYER``.
         """
-        # TODO: filter tracked.cls for ball, compute centroid, find nearest player bbox center
-        return PossessionState()
+        balls = [i for i in tracks.instances if i.role is ObjectRole.BALL]
+        players = [i for i in tracks.instances if i.role is ObjectRole.PLAYER]
+
+        if not balls:
+            return PossessionState()
+
+        # If multiple ball hypotheses, take highest confidence
+        ball = max(balls, key=lambda b: b.confidence)
+        bx, by = _bbox_center(ball.xyxy)
+        ball_xy = (bx, by)
+
+        best_tid: Optional[int] = None
+        best_d2 = float(self._settings.possession_proximity_px) ** 2
+
+        for pl in players:
+            if pl.track_id < 0:
+                continue
+            px, py = _bbox_center(pl.xyxy)
+            dx, dy = px - bx, py - by
+            d2 = dx * dx + dy * dy
+            if d2 <= best_d2:
+                best_d2 = d2
+                best_tid = pl.track_id
+
+        if best_tid is None:
+            return PossessionState(ball_xy=ball_xy)
+
+        team = track_to_team.get(best_tid)
+        return PossessionState(team_id=team, track_id=best_tid, ball_xy=ball_xy)

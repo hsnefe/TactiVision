@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""CLI entry: football broadcast analysis (starter scaffolding)."""
+"""CLI entry: football broadcast analysis (YOLO + tracking + optional JSONL log)."""
 
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
+from tactivision.config.class_mapping import parse_class_role_overrides
 from tactivision.config.settings import Settings
 from tactivision.pipeline.runner import AnalysisPipeline
 
@@ -18,7 +20,7 @@ def _default_output_path(input_path: Path) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Football video analysis: YOLO + tracking + teams + possession (WIP)."
+        description="Football video analysis: YOLO + tracking + teams + possession."
     )
     p.add_argument(
         "--video",
@@ -57,6 +59,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Tracker config name for Ultralytics.",
     )
     p.add_argument(
+        "--class-preset",
+        type=str,
+        default="coco_football",
+        choices=("coco_football", "football_three_class"),
+        help="How to map YOLO class names to player/referee/ball roles.",
+    )
+    p.add_argument(
+        "--class-role-override",
+        type=str,
+        default=None,
+        help='Optional overrides like "32:ball,0:player" (class index:role).',
+    )
+    p.add_argument(
+        "--keep-other-classes",
+        action="store_true",
+        help="Keep YOLO classes mapped to role 'other' (default: drop them).",
+    )
+    p.add_argument(
+        "--tracks-jsonl",
+        type=Path,
+        default=None,
+        help="Optional path to write per-frame tracking JSON Lines.",
+    )
+    p.add_argument(
+        "--debug-tracking",
+        action="store_true",
+        help="Print verbose tracker diagnostics.",
+    )
+    p.add_argument(
         "--possession-radius",
         type=float,
         default=80.0,
@@ -88,6 +119,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         output_path = output_path.expanduser().resolve()
 
+    if args.debug_tracking:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    overrides = parse_class_role_overrides(args.class_role_override)
+
     settings = Settings(
         input_video=video_path,
         output_video=output_path,
@@ -95,6 +133,11 @@ def main(argv: list[str] | None = None) -> int:
         conf_threshold=args.conf,
         iou_threshold=args.iou,
         tracker_config=args.tracker,
+        class_mapping_preset=args.class_preset,
+        class_role_overrides=overrides,
+        only_mapped_classes=not args.keep_other_classes,
+        tracks_log_path=args.tracks_jsonl,
+        debug_tracking=args.debug_tracking,
         possession_proximity_px=args.possession_radius,
         enable_camera_pan=not args.no_camera_pan,
         enable_top_down=not args.no_topdown,
@@ -103,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
     pipeline = AnalysisPipeline(settings)
     out = pipeline.run()
     print(f"Wrote: {out}")
+    if settings.tracks_log_path:
+        print(f"Tracks log: {settings.tracks_log_path}")
     return 0
 
 

@@ -1,4 +1,9 @@
-"""Ultralytics YOLO wrapper — stub until model wiring is implemented."""
+"""
+Ultralytics YOLO detection-only wrapper (optional).
+
+For full video analysis, prefer :class:`~tactivision.tracking.object_tracker.ObjectTracker`,
+which runs ``YOLO.track`` with persistent IDs and semantic role mapping.
+"""
 
 from __future__ import annotations
 
