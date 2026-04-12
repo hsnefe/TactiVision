@@ -1,0 +1,7 @@
+# Football video analysis (YOLO + OpenCV + NumPy + scikit-learn)
+opencv-python>=4.8.0
+numpy>=1.24.0
+ultralytics>=8.0.0
+scikit-learn>=1.3.0
+# PyTorch: install per platform (CPU/CUDA). Ultralytics will pull a compatible torch if omitted.
+# pip install torch --index-url https://download.pytorch.org/whl/cpu

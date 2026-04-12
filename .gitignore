@@ -1,0 +1,15 @@
+*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# macOS
+.DS_Store
+
+# Editor local history (e.g. Cursor / VS Code)
+.history/
+
+# Large video assets (keep locally; not tracked)
+*.mp4
