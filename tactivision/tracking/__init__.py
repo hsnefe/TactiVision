@@ -7,6 +7,7 @@ Heavy imports (:class:`ObjectTracker`) are lazy to avoid circular imports with
 
 from __future__ import annotations
 
+from tactivision.tracking.ball_types import FrameTrackingOutput, RawBallDetection
 from tactivision.tracking.schema import FrameTracks, ObjectRole, TrackedInstance
 from tactivision.tracking.track_log import TrackingJsonlWriter, frame_tracks_to_record
 
@@ -14,6 +15,8 @@ __all__ = [
     "ObjectTracker",
     "Tracker",
     "FrameTracks",
+    "FrameTrackingOutput",
+    "RawBallDetection",
     "TrackedInstance",
     "ObjectRole",
     "TrackingJsonlWriter",

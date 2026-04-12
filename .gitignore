@@ -13,3 +13,6 @@ __pycache__/
 
 # Large video assets (keep locally; not tracked)
 *.mp4
+
+# Downloaded YOLO weights
+*.pt

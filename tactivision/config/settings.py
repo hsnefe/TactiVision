@@ -16,11 +16,27 @@ class Settings:
 
     input_video: Path
     output_video: Path
-    model_path: str = "yolov8n.pt"
-    conf_threshold: float = 0.25
+    model_path: str = "yolov8s.pt"
+    """Default YOLOv8 small — better small-object recall than ``yolov8n.pt``."""
+
+    conf_threshold: float = 0.22
+    """Main ``track()`` confidence; slightly below 0.25 to help marginal detections."""
+
     iou_threshold: float = 0.45
     tracker_config: str = "bytetrack.yaml"
     """Ultralytics tracker YAML name (under ultralytics/cfg/trackers/)."""
+
+    inference_imgsz: int = 1280
+    """Letterbox size for both ``track`` and ball-only ``predict`` (larger helps tiny ball)."""
+
+    ball_conf_threshold: float = 0.12
+    """Lower threshold on ball-class-only ``predict`` pass for recall / yellow debug overlay."""
+
+    ball_max_gap_frames: int = 8
+    """When track loses the ball, extrapolate position for this many frames (blue overlay)."""
+
+    ball_debug_overlay: bool = True
+    """Draw yellow raw / red tracked / blue estimated ball diagnostics on the output video."""
 
     class_mapping_preset: str = "coco_football"
     """Preset for YOLO class id -> role: ``coco_football`` or ``football_three_class``."""

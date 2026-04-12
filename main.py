@@ -37,14 +37,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--model",
         type=str,
-        default="yolov8n.pt",
-        help="Ultralytics YOLO weights path or model name.",
+        default="yolov8s.pt",
+        help="Ultralytics YOLO weights (yolov8s recommended over nano for small ball).",
     )
     p.add_argument(
         "--conf",
         type=float,
-        default=0.25,
-        help="Detection confidence threshold.",
+        default=0.22,
+        help="Main track() confidence threshold.",
+    )
+    p.add_argument(
+        "--imgsz",
+        type=int,
+        default=1280,
+        help="Letterbox inference size (larger improves tiny ball recall, slower).",
+    )
+    p.add_argument(
+        "--ball-conf",
+        type=float,
+        default=0.12,
+        help="Lower threshold for ball-class-only raw predict pass (yellow debug boxes).",
+    )
+    p.add_argument(
+        "--ball-gap",
+        type=int,
+        default=8,
+        help="Max frames to extrapolate ball position when track drops (blue circle).",
+    )
+    p.add_argument(
+        "--no-ball-debug",
+        action="store_true",
+        help="Disable yellow/red/blue ball debug overlay (faster draw).",
     )
     p.add_argument(
         "--iou",
@@ -133,6 +156,10 @@ def main(argv: list[str] | None = None) -> int:
         conf_threshold=args.conf,
         iou_threshold=args.iou,
         tracker_config=args.tracker,
+        inference_imgsz=args.imgsz,
+        ball_conf_threshold=args.ball_conf,
+        ball_max_gap_frames=args.ball_gap,
+        ball_debug_overlay=not args.no_ball_debug,
         class_mapping_preset=args.class_preset,
         class_role_overrides=overrides,
         only_mapped_classes=not args.keep_other_classes,

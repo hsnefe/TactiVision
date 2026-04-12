@@ -10,7 +10,9 @@ from tactivision.config.settings import Settings
 from tactivision.field.homography import FieldMapper
 from tactivision.io.video import VideoReader, VideoWriter, VideoProperties
 from tactivision.teams.team_assigner import TeamAssigner
+from tactivision.tracking.ball_temporal import BallTemporalBridge
 from tactivision.tracking.object_tracker import ObjectTracker
+from tactivision.tracking.schema import ObjectRole
 from tactivision.tracking.track_log import TrackingJsonlWriter
 from tactivision.visualization.renderer import AnnotationRenderer
 
@@ -26,6 +28,7 @@ class AnalysisPipeline:
         self._camera_pan = CameraPanEstimator(settings)
         self._field = FieldMapper(settings)
         self._renderer = AnnotationRenderer()
+        self._ball_bridge = BallTemporalBridge(settings.ball_max_gap_frames)
 
     def run(self) -> Path:
         """
@@ -39,6 +42,7 @@ class AnalysisPipeline:
 
         self._tracker.load()
         self._tracker.reset()
+        self._ball_bridge.reset()
         self._teams.reset()
         self._possession.reset()
         self._camera_pan.reset()
@@ -85,9 +89,16 @@ class AnalysisPipeline:
         frame_index = 0
         for frame in reader.frames():
             t_sec = frame_index / fps
-            tracks = self._tracker.update(frame, frame_index=frame_index, timestamp_sec=t_sec)
+            ft_out = self._tracker.update(
+                frame, frame_index=frame_index, timestamp_sec=t_sec
+            )
+            tracks = ft_out.tracks
             if log_writer is not None:
                 log_writer.write_frame(tracks)
+
+            tracked_balls = tracks.filter_by_role({ObjectRole.BALL})
+            est_xy, is_estimated = self._ball_bridge.update(frame_index, tracked_balls)
+            estimated_ball_center = est_xy if is_estimated else None
 
             track_to_team = self._teams.update(frame, tracks)
             poss = self._possession.update(frame, tracks, track_to_team)
@@ -102,6 +113,9 @@ class AnalysisPipeline:
                 track_to_team,
                 poss,
                 hud_text=hud,
+                raw_ball_detections=ft_out.raw_ball_detections,
+                estimated_ball_center=estimated_ball_center,
+                ball_debug_overlay=self._settings.ball_debug_overlay,
             )
             writer.write(annotated)
             frame_index += 1
