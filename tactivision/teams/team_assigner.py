@@ -1,12 +1,11 @@
-"""Assign each track to team A/B using jersey color clustering (K-means)."""
+"""Facade for jersey-based team assignment; delegates to :class:`TeamClassifier`."""
 
 from __future__ import annotations
 
 from typing import Optional
 
-import numpy as np
-
 from tactivision.config.settings import Settings
+from tactivision.teams.team_classifier import TeamClassifier
 from tactivision.tracking.schema import FrameTracks
 
 
@@ -14,26 +13,27 @@ class TeamAssigner:
     """
     Samples pixels inside player bounding boxes, clusters into two dominant colors,
     maps clusters to team IDs, and returns a stable track_id -> team_id mapping.
+
+    Implementation lives in :class:`~tactivision.teams.team_classifier.TeamClassifier`.
     """
 
     def __init__(self, settings: Settings) -> None:
-        self._settings = settings
-        self._track_team: dict[int, int] = {}
+        self._classifier = TeamClassifier(settings)
+        self._last_teams: dict[int, int] = {}
 
     def reset(self) -> None:
-        self._track_team.clear()
+        self._classifier.reset()
+        self._last_teams.clear()
 
-    def update(self, _frame: np.ndarray, tracks: FrameTracks) -> dict[int, int]:
+    def update(self, frame: np.ndarray, tracks: FrameTracks) -> dict[int, int]:
         """
         Update team labels from current frame and tracks.
 
         Only :class:`~tactivision.tracking.schema.ObjectRole` ``PLAYER`` instances
-        are considered for jersey color in a full implementation.
-
-        Returns a copy of the current mapping ``track_id -> team_id`` (0/1).
+        are classified; referees and ball are ignored.
         """
-        # TODO: crop ROIs for tracks.filter_by_role({ObjectRole.PLAYER}), KMeans, etc.
-        return dict(self._track_team)
+        self._last_teams = self._classifier.update(frame, tracks)
+        return dict(self._last_teams)
 
     def team_for_track(self, track_id: int) -> Optional[int]:
-        return self._track_team.get(track_id)
+        return self._last_teams.get(track_id)

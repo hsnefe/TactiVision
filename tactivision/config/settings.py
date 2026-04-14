@@ -56,6 +56,33 @@ class Settings:
     possession_proximity_px: float = 80.0
     """Max distance (pixels) from ball center to assign possession to a player."""
 
+    team_classification_enabled: bool = True
+    """If False, skip jersey-based team assignment (all players uncolored by team)."""
+
+    team_torso_y0_ratio: float = 0.05
+    """Top of torso crop: fraction of box height from box top (below hair/head)."""
+
+    team_torso_y1_ratio: float = 0.45
+    """Bottom of torso crop: fraction of box height from box top (upper chest / shirt)."""
+
+    team_grass_hsv_lower: tuple[int, int, int] = (35, 40, 40)
+    """OpenCV HSV lower bound for pitch green to mask out (H 0–179)."""
+
+    team_grass_hsv_upper: tuple[int, int, int] = (85, 255, 255)
+    """OpenCV HSV upper bound for pitch green."""
+
+    team_grass_morph_kernel: int = 3
+    """Odd kernel size for morphological open on grass mask (0 to disable)."""
+
+    team_kmeans_min_samples: int = 4
+    """Minimum players in frame to fit KMeans; below this, use prior team centers."""
+
+    team_history_frames: int = 21
+    """Per-track deque length for majority-vote stabilization (odd recommended)."""
+
+    team_center_ema_alpha: float = 0.15
+    """EMA weight to update global Lab team centers from each frame's KMeans centers."""
+
     enable_camera_pan: bool = True
     enable_top_down: bool = True
     """When True, run optional homography / mini-pitch mapping if implemented."""

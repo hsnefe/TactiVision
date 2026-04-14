@@ -30,6 +30,7 @@ class ObjectTracker:
         self._role_by_class_id: dict[int, ObjectRole] = {}
         self._class_names: dict[int, str] = {}
         self._ball_class_ids: list[int] = []
+        self._track_class_ids: list[int] = []
 
     def load(self) -> None:
         """Load Ultralytics weights and build the class-id -> role table."""
@@ -53,13 +54,19 @@ class ObjectTracker:
         self._ball_class_ids = [
             cid for cid, role in self._role_by_class_id.items() if role is ObjectRole.BALL
         ]
+        self._track_class_ids = [
+            cid
+            for cid, role in self._role_by_class_id.items()
+            if role in (ObjectRole.PLAYER, ObjectRole.REFEREE, ObjectRole.BALL)
+        ]
 
         if self._settings.debug_tracking:
             logger.info(
-                "ObjectTracker loaded model=%s imgsz=%s ball_classes=%s preset=%s",
+                "ObjectTracker loaded model=%s imgsz=%s ball_classes=%s track_classes=%s preset=%s",
                 self._settings.model_path,
                 self._settings.inference_imgsz,
                 self._ball_class_ids,
+                self._track_class_ids,
                 self._settings.class_mapping_preset,
             )
 
@@ -125,6 +132,7 @@ class ObjectTracker:
                 iou=self._settings.iou_threshold,
                 imgsz=self._settings.inference_imgsz,
                 tracker=self._settings.tracker_config,
+                classes=self._track_class_ids or None,
                 persist=True,
                 verbose=False,
                 stream=False,
@@ -205,3 +213,4 @@ class ObjectTracker:
         self._role_by_class_id.clear()
         self._class_names.clear()
         self._ball_class_ids.clear()
+        self._track_class_ids.clear()

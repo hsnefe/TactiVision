@@ -28,7 +28,7 @@ class AnnotationRenderer:
         self,
         frame: np.ndarray,
         tracks: FrameTracks,
-        track_to_team: dict[int, int],
+        track_to_team: Optional[dict[int, int]],
         possession: PossessionState,
         hud_text: Optional[str] = None,
         *,
@@ -46,7 +46,13 @@ class AnnotationRenderer:
         out = frame.copy()
         if ball_debug_overlay:
             out = draw_raw_ball_detections(out, raw_ball_detections)
-        out = draw_frame_tracks(out, tracks, thickness=2, show_role=True)
+        out = draw_frame_tracks(
+            out,
+            tracks,
+            thickness=2,
+            show_role=True,
+            track_to_team=track_to_team,
+        )
         if ball_debug_overlay:
             out = draw_tracked_ball_highlight(out, tracks)
             out = draw_estimated_ball(out, estimated_ball_center)

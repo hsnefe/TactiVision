@@ -102,6 +102,9 @@ class AnalysisPipeline:
 
             track_to_team = self._teams.update(frame, tracks)
             poss = self._possession.update(frame, tracks, track_to_team)
+            team_draw = (
+                track_to_team if self._settings.team_classification_enabled else None
+            )
             _pan = self._camera_pan.update(frame)
             if self._settings.enable_top_down:
                 _ = self._field.image_to_field((0.0, 0.0))
@@ -110,7 +113,7 @@ class AnalysisPipeline:
             annotated = self._renderer.render(
                 frame,
                 tracks,
-                track_to_team,
+                team_draw,
                 poss,
                 hud_text=hud,
                 raw_ball_detections=ft_out.raw_ball_detections,

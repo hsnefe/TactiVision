@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import cv2
 import numpy as np
 
@@ -15,6 +17,13 @@ ROLE_COLORS_BGR: dict[ObjectRole, tuple[int, int, int]] = {
     ObjectRole.OTHER: (200, 200, 200),
 }
 
+# Team jersey visualization (when track_to_team is provided for PLAYER).
+TEAM_COLORS_BGR: dict[int, tuple[int, int, int]] = {
+    0: (255, 128, 0),  # team A — orange-blue
+    1: (255, 0, 128),  # team B — magenta
+}
+PLAYER_UNKNOWN_TEAM_BGR: tuple[int, int, int] = (140, 140, 140)
+
 
 def draw_frame_tracks(
     frame: np.ndarray,
@@ -22,6 +31,7 @@ def draw_frame_tracks(
     *,
     thickness: int = 2,
     show_role: bool = True,
+    track_to_team: Optional[dict[int, int]] = None,
 ) -> np.ndarray:
     """
     Draw each instance's box, track id, and optional role label.
@@ -36,16 +46,28 @@ def draw_frame_tracks(
         Rectangle line thickness in pixels.
     show_role :
         If True, label format is ``role:id``; otherwise ``id`` only (or ``?`` if no id).
+    track_to_team :
+        If set, ``PLAYER`` boxes use team colors; unknown team stays gray.
     """
     out = frame.copy()
+    tmap = track_to_team or {}
     for inst in frame_tracks.instances:
-        color = ROLE_COLORS_BGR.get(inst.role, ROLE_COLORS_BGR[ObjectRole.OTHER])
+        if inst.role is ObjectRole.PLAYER and inst.track_id >= 0 and inst.track_id in tmap:
+            tid = tmap[inst.track_id]
+            color = TEAM_COLORS_BGR.get(tid, PLAYER_UNKNOWN_TEAM_BGR)
+        elif inst.role is ObjectRole.PLAYER and track_to_team is not None:
+            color = PLAYER_UNKNOWN_TEAM_BGR
+        else:
+            color = ROLE_COLORS_BGR.get(inst.role, ROLE_COLORS_BGR[ObjectRole.OTHER])
         x1, y1, x2, y2 = [int(round(v)) for v in inst.xyxy]
         cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness, lineType=cv2.LINE_AA)
 
         if show_role:
             if inst.track_id >= 0:
-                label = f"{inst.role.value}:{inst.track_id}"
+                if inst.role is ObjectRole.PLAYER and inst.track_id in tmap:
+                    label = f"T{tmap[inst.track_id]}:{inst.track_id}"
+                else:
+                    label = f"{inst.role.value}:{inst.track_id}"
             else:
                 label = f"{inst.role.value}:?"
         else:
@@ -73,4 +95,9 @@ def draw_frame_tracks(
     return out
 
 
-__all__ = ["draw_frame_tracks", "ROLE_COLORS_BGR"]
+__all__ = [
+    "draw_frame_tracks",
+    "ROLE_COLORS_BGR",
+    "TEAM_COLORS_BGR",
+    "PLAYER_UNKNOWN_TEAM_BGR",
+]

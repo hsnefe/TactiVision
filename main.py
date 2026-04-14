@@ -126,6 +126,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable optional top-down / homography stage.",
     )
+    p.add_argument(
+        "--no-teams",
+        action="store_true",
+        help="Disable jersey-based team colors (players use default role color).",
+    )
+    p.add_argument(
+        "--team-history",
+        type=int,
+        default=21,
+        help="Frames of majority-vote history per track for team stabilization (odd).",
+    )
     return p
 
 
@@ -168,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
         possession_proximity_px=args.possession_radius,
         enable_camera_pan=not args.no_camera_pan,
         enable_top_down=not args.no_topdown,
+        team_classification_enabled=not args.no_teams,
+        team_history_frames=args.team_history,
     )
 
     pipeline = AnalysisPipeline(settings)
