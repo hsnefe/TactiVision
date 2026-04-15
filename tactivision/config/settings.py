@@ -53,6 +53,15 @@ class Settings:
     debug_tracking: bool = False
     """Log extra inference / parse diagnostics."""
 
+    debug_player_tracking: bool = False
+    """Emit terminal events for player recognition/loss/found transitions."""
+
+    debug_only1_player: bool = False
+    """If True, lock to the first recognized player id and log only that player."""
+
+    debug_player_scope_margin_px: int = 20
+    """Border margin for out-of-scope detection based on last visible bbox."""
+
     possession_proximity_px: float = 80.0
     """Max distance (pixels) from ball center to assign possession to a player."""
 

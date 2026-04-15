@@ -7,6 +7,7 @@ from pathlib import Path
 from tactivision.analytics.camera_pan import CameraPanEstimator
 from tactivision.analytics.possession import PossessionEstimator
 from tactivision.config.settings import Settings
+from tactivision.debug.player_tracking_debugger import PlayerTrackingDebugger
 from tactivision.field.homography import FieldMapper
 from tactivision.io.video import VideoReader, VideoWriter, VideoProperties
 from tactivision.teams.team_assigner import TeamAssigner
@@ -29,6 +30,10 @@ class AnalysisPipeline:
         self._field = FieldMapper(settings)
         self._renderer = AnnotationRenderer()
         self._ball_bridge = BallTemporalBridge(settings.ball_max_gap_frames)
+        self._player_debugger = PlayerTrackingDebugger(
+            only_one_player=settings.debug_only1_player,
+            scope_margin_px=settings.debug_player_scope_margin_px,
+        )
 
     def run(self) -> Path:
         """
@@ -43,6 +48,7 @@ class AnalysisPipeline:
         self._tracker.load()
         self._tracker.reset()
         self._ball_bridge.reset()
+        self._player_debugger.reset()
         self._teams.reset()
         self._possession.reset()
         self._camera_pan.reset()
@@ -93,6 +99,13 @@ class AnalysisPipeline:
                 frame, frame_index=frame_index, timestamp_sec=t_sec
             )
             tracks = ft_out.tracks
+            if self._settings.debug_player_tracking:
+                h, w = frame.shape[:2]
+                self._player_debugger.update(
+                    frame_tracks=tracks,
+                    frame_width=w,
+                    frame_height=h,
+                )
             if log_writer is not None:
                 log_writer.write_frame(tracks)
 

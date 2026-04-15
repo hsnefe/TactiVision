@@ -111,6 +111,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print verbose tracker diagnostics.",
     )
     p.add_argument(
+        "--debug_player_tracking",
+        action="store_true",
+        help="Print player recognized/out-of-scope/track-loss/found events to terminal.",
+    )
+    p.add_argument(
+        "--debug_only1_player",
+        action="store_true",
+        help="With --debug_player_tracking, log only the first recognized player id.",
+    )
+    p.add_argument(
         "--possession-radius",
         type=float,
         default=80.0,
@@ -176,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
         only_mapped_classes=not args.keep_other_classes,
         tracks_log_path=args.tracks_jsonl,
         debug_tracking=args.debug_tracking,
+        debug_player_tracking=args.debug_player_tracking,
+        debug_only1_player=args.debug_only1_player,
         possession_proximity_px=args.possession_radius,
         enable_camera_pan=not args.no_camera_pan,
         enable_top_down=not args.no_topdown,
