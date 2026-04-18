@@ -38,6 +38,36 @@ class Settings:
     ball_debug_overlay: bool = True
     """Draw yellow raw / red tracked / blue estimated ball diagnostics on the output video."""
 
+    roi_recovery_enabled: bool = True
+    """If True, run a second low-threshold person-only ``predict`` on ROIs around lost players."""
+
+    roi_conf_threshold: float = 0.08
+    """Confidence for ROI-only person ``predict`` (typically below main ``conf_threshold``)."""
+
+    roi_margin_ratio: float = 0.4
+    """Expand last bbox by this fraction of width/height before cropping (per side)."""
+
+    roi_inference_imgsz: int = 1280
+    """Letterbox size for ROI ``predict`` (larger helps small / weak person boxes)."""
+
+    roi_max_per_frame: int = 8
+    """Max lost player ROIs to evaluate per frame (cost control)."""
+
+    roi_skip_near_border: bool = True
+    """Skip ROI recovery when the last bbox touches the frame border (likely out of scope)."""
+
+    roi_border_margin_px: int = 20
+    """Pixel margin for border touch test (same idea as debug player scope)."""
+
+    roi_min_iou_with_last: float = 0.08
+    """Reject ROI detections with IoU below this vs the last bbox (wild false positives)."""
+
+    roi_max_iou_with_other_track: float = 0.45
+    """Skip recovery if the candidate overlaps another track's box this strongly."""
+
+    roi_max_lost_streak: int = 120
+    """Stop ROI attempts after this many consecutive primary misses for the same track id."""
+
     class_mapping_preset: str = "coco_football"
     """Preset for YOLO class id -> role: ``coco_football`` or ``football_three_class``."""
 
@@ -52,6 +82,14 @@ class Settings:
 
     debug_tracking: bool = False
     """Log extra inference / parse diagnostics."""
+
+    debug_persons: bool = False
+    """
+    First-track style pipeline: only ``YOLO.track()`` boxes + role-colored draw.
+
+    Disables ball-only raw ``predict``, ROI player recovery, ball debug overlay,
+    temporal ball estimate, and jersey team coloring (see ``main.py`` wiring).
+    """
 
     debug_player_tracking: bool = False
     """Emit terminal events for player recognition/loss/found transitions."""

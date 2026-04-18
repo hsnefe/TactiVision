@@ -70,6 +70,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable yellow/red/blue ball debug overlay (faster draw).",
     )
     p.add_argument(
+        "--no-roi-recovery",
+        action="store_true",
+        help="Disable ROI second-pass person predict around primary-missed player tracks.",
+    )
+    p.add_argument(
+        "--roi-conf",
+        type=float,
+        default=0.08,
+        help="ROI-only person predict confidence (lower than main --conf).",
+    )
+    p.add_argument(
+        "--roi-margin",
+        type=float,
+        default=0.4,
+        help="Expand last bbox by this fraction of w/h before ROI crop.",
+    )
+    p.add_argument(
+        "--roi-imgsz",
+        type=int,
+        default=1280,
+        help="Letterbox size for ROI person predict.",
+    )
+    p.add_argument(
+        "--roi-max",
+        type=int,
+        default=8,
+        help="Max ROI recoveries per frame.",
+    )
+    p.add_argument(
+        "--roi-max-lost-streak",
+        type=int,
+        default=120,
+        help="Drop ROI state after this many consecutive primary misses for a track id.",
+    )
+    p.add_argument(
+        "--roi-no-border-skip",
+        action="store_true",
+        help="Allow ROI recovery even when the last bbox touches the frame border.",
+    )
+    p.add_argument(
         "--iou",
         type=float,
         default=0.45,
@@ -109,6 +149,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--debug-tracking",
         action="store_true",
         help="Print verbose tracker diagnostics.",
+    )
+    p.add_argument(
+        "--debug_persons",
+        action="store_true",
+        help=(
+            "First-track style run: only YOLO track() boxes + role colors. "
+            "Disables ball raw predict, ROI recovery, ball debug overlay, "
+            "ball gap estimate, and team jersey colors."
+        ),
     )
     p.add_argument(
         "--debug_player_tracking",
@@ -170,6 +219,11 @@ def main(argv: list[str] | None = None) -> int:
 
     overrides = parse_class_role_overrides(args.class_role_override)
 
+    debug_persons = bool(args.debug_persons)
+    ball_debug = not args.no_ball_debug and not debug_persons
+    roi_on = not args.no_roi_recovery and not debug_persons
+    teams_on = not args.no_teams and not debug_persons
+
     settings = Settings(
         input_video=video_path,
         output_video=output_path,
@@ -180,7 +234,15 @@ def main(argv: list[str] | None = None) -> int:
         inference_imgsz=args.imgsz,
         ball_conf_threshold=args.ball_conf,
         ball_max_gap_frames=args.ball_gap,
-        ball_debug_overlay=not args.no_ball_debug,
+        ball_debug_overlay=ball_debug,
+        roi_recovery_enabled=roi_on,
+        debug_persons=debug_persons,
+        roi_conf_threshold=args.roi_conf,
+        roi_margin_ratio=args.roi_margin,
+        roi_inference_imgsz=args.roi_imgsz,
+        roi_max_per_frame=args.roi_max,
+        roi_max_lost_streak=args.roi_max_lost_streak,
+        roi_skip_near_border=not args.roi_no_border_skip,
         class_mapping_preset=args.class_preset,
         class_role_overrides=overrides,
         only_mapped_classes=not args.keep_other_classes,
@@ -191,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         possession_proximity_px=args.possession_radius,
         enable_camera_pan=not args.no_camera_pan,
         enable_top_down=not args.no_topdown,
-        team_classification_enabled=not args.no_teams,
+        team_classification_enabled=teams_on,
         team_history_frames=args.team_history,
     )
 

@@ -110,19 +110,35 @@ class AnalysisPipeline:
                 log_writer.write_frame(tracks)
 
             tracked_balls = tracks.filter_by_role({ObjectRole.BALL})
-            est_xy, is_estimated = self._ball_bridge.update(frame_index, tracked_balls)
-            estimated_ball_center = est_xy if is_estimated else None
+            if self._settings.debug_persons:
+                estimated_ball_center = None
+            else:
+                est_xy, is_estimated = self._ball_bridge.update(
+                    frame_index, tracked_balls
+                )
+                estimated_ball_center = est_xy if is_estimated else None
 
-            track_to_team = self._teams.update(frame, tracks)
-            poss = self._possession.update(frame, tracks, track_to_team)
-            team_draw = (
-                track_to_team if self._settings.team_classification_enabled else None
+            if self._settings.debug_persons:
+                track_to_team: dict[int, int] = {}
+                poss = self._possession.update(frame, tracks, track_to_team)
+            else:
+                track_to_team = self._teams.update(frame, tracks)
+                poss = self._possession.update(frame, tracks, track_to_team)
+            team_enabled = (
+                self._settings.team_classification_enabled
+                and not self._settings.debug_persons
             )
+            team_draw = track_to_team if team_enabled else None
             _pan = self._camera_pan.update(frame)
             if self._settings.enable_top_down:
                 _ = self._field.image_to_field((0.0, 0.0))
 
             hud = f"frame {frame_index}"
+            if self._settings.debug_persons:
+                hud = f"{hud} | debug_persons"
+            ball_debug = (
+                self._settings.ball_debug_overlay and not self._settings.debug_persons
+            )
             annotated = self._renderer.render(
                 frame,
                 tracks,
@@ -131,7 +147,7 @@ class AnalysisPipeline:
                 hud_text=hud,
                 raw_ball_detections=ft_out.raw_ball_detections,
                 estimated_ball_center=estimated_ball_center,
-                ball_debug_overlay=self._settings.ball_debug_overlay,
+                ball_debug_overlay=ball_debug,
             )
             writer.write(annotated)
             frame_index += 1

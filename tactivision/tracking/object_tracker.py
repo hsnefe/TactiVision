@@ -10,6 +10,12 @@ import numpy as np
 from tactivision.config.class_mapping import build_role_map_from_model, merge_role_overrides
 from tactivision.config.settings import Settings
 from tactivision.tracking.ball_types import FrameTrackingOutput, RawBallDetection
+from tactivision.tracking.roi_recovery import (
+    bbox_iou,
+    expand_xyxy,
+    is_near_frame_border,
+    pick_best_by_iou,
+)
 from tactivision.tracking.schema import FrameTracks, ObjectRole, TrackedInstance
 
 logger = logging.getLogger(__name__)
@@ -22,6 +28,10 @@ class ObjectTracker:
 
     For ball recall diagnostics, also runs a ball-class-only ``predict`` pass at
     ``Settings.ball_conf_threshold`` (typically lower than the main ``conf``).
+
+    Optional ROI recovery (``Settings.roi_recovery_enabled``) runs a low-threshold
+    person-only ``predict`` on crops around players the main tracker missed and
+    injects synthetic :class:`TrackedInstance` rows with the same ``track_id``.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -31,6 +41,9 @@ class ObjectTracker:
         self._class_names: dict[int, str] = {}
         self._ball_class_ids: list[int] = []
         self._track_class_ids: list[int] = []
+        self._player_class_ids: list[int] = []
+        self._prev_player_by_id: dict[int, TrackedInstance] = {}
+        self._roi_lost_streak: dict[int, int] = {}
 
     def load(self) -> None:
         """Load Ultralytics weights and build the class-id -> role table."""
@@ -59,6 +72,9 @@ class ObjectTracker:
             for cid, role in self._role_by_class_id.items()
             if role in (ObjectRole.PLAYER, ObjectRole.REFEREE, ObjectRole.BALL)
         ]
+        self._player_class_ids = [
+            cid for cid, role in self._role_by_class_id.items() if role is ObjectRole.PLAYER
+        ]
 
         if self._settings.debug_tracking:
             logger.info(
@@ -75,6 +91,8 @@ class ObjectTracker:
         return self._model is not None
 
     def reset(self) -> None:
+        self._prev_player_by_id.clear()
+        self._roi_lost_streak.clear()
         if self._settings.debug_tracking:
             logger.debug("ObjectTracker.reset()")
 
@@ -123,7 +141,9 @@ class ObjectTracker:
         if self._model is None:
             raise RuntimeError("ObjectTracker.load() must be called before update().")
 
-        raw_balls = self._raw_ball_predict(frame)
+        raw_balls: tuple[RawBallDetection, ...] = ()
+        if not self._settings.debug_persons:
+            raw_balls = self._raw_ball_predict(frame)
 
         try:
             results = self._model.track(
@@ -141,10 +161,186 @@ class ObjectTracker:
             logger.exception("YOLO track() failed at frame %s", frame_index)
             raise RuntimeError(f"Tracking failed at frame {frame_index}: {e}") from e
 
-        tracks = self._boxes_to_frame_tracks(
-            results, frame_index, timestamp_sec
+        primary = self._boxes_to_frame_tracks(results, frame_index, timestamp_sec)
+        if self._settings.debug_persons:
+            return FrameTrackingOutput(tracks=primary, raw_ball_detections=raw_balls)
+
+        self._update_roi_lost_streak(primary)
+        merged = (
+            self._merge_roi_player_recovery(frame, frame_index, timestamp_sec, primary)
+            if self._settings.roi_recovery_enabled
+            else primary
         )
-        return FrameTrackingOutput(tracks=tracks, raw_ball_detections=raw_balls)
+        self._refresh_prev_player_state(merged)
+        return FrameTrackingOutput(tracks=merged, raw_ball_detections=raw_balls)
+
+    def _update_roi_lost_streak(self, primary: FrameTracks) -> None:
+        """Primary missed tracks increment streak; primary hits reset it."""
+        primary_pids = {
+            inst.track_id
+            for inst in primary.instances
+            if inst.role is ObjectRole.PLAYER and inst.track_id >= 0
+        }
+        for tid in primary_pids:
+            self._roi_lost_streak[tid] = 0
+        for tid in list(self._prev_player_by_id.keys()):
+            if tid not in primary_pids:
+                self._roi_lost_streak[tid] = self._roi_lost_streak.get(tid, 0) + 1
+
+    def _refresh_prev_player_state(self, merged: FrameTracks) -> None:
+        """Keep last bboxes for ROI while a track is missing (until pruned by streak)."""
+        new_prev: dict[int, TrackedInstance] = {}
+        for inst in merged.instances:
+            if inst.role is ObjectRole.PLAYER and inst.track_id >= 0:
+                new_prev[inst.track_id] = inst
+        for tid, old in self._prev_player_by_id.items():
+            if tid in new_prev:
+                continue
+            if self._roi_lost_streak.get(tid, 0) <= self._settings.roi_max_lost_streak:
+                new_prev[tid] = old
+        self._prev_player_by_id = new_prev
+        for tid in list(self._roi_lost_streak.keys()):
+            if tid not in self._prev_player_by_id:
+                del self._roi_lost_streak[tid]
+
+    def _merge_roi_player_recovery(
+        self,
+        frame: np.ndarray,
+        frame_index: int,
+        timestamp_sec: float | None,
+        primary: FrameTracks,
+    ) -> FrameTracks:
+        """
+        If ByteTrack misses a player id that existed before, run a low-threshold
+        person-only ``predict`` on an expanded crop and inject a synthetic
+        :class:`TrackedInstance` with the **same** ``track_id`` so downstream
+        stages can keep continuity until the main tracker sees the player again.
+        """
+        if not self._player_class_ids or self._model is None:
+            return primary
+
+        h, w = int(frame.shape[0]), int(frame.shape[1])
+        primary_pids = {
+            inst.track_id
+            for inst in primary.instances
+            if inst.role is ObjectRole.PLAYER and inst.track_id >= 0
+        }
+
+        candidates: list[int] = []
+        for tid, inst in self._prev_player_by_id.items():
+            if tid in primary_pids:
+                continue
+            if self._roi_lost_streak.get(tid, 0) > self._settings.roi_max_lost_streak:
+                continue
+            if self._settings.roi_skip_near_border and is_near_frame_border(
+                inst.xyxy,
+                w,
+                h,
+                self._settings.roi_border_margin_px,
+            ):
+                continue
+            candidates.append(tid)
+
+        candidates.sort()
+        candidates = candidates[: self._settings.roi_max_per_frame]
+
+        extra: list[TrackedInstance] = []
+        for tid in candidates:
+            last = self._prev_player_by_id[tid]
+            rx1, ry1, rx2, ry2 = expand_xyxy(
+                last.xyxy,
+                self._settings.roi_margin_ratio,
+                w,
+                h,
+            )
+            roi = frame[ry1:ry2, rx1:rx2]
+            if roi.size == 0:
+                continue
+
+            pred = self._model.predict(
+                source=roi,
+                conf=self._settings.roi_conf_threshold,
+                iou=self._settings.iou_threshold,
+                imgsz=self._settings.roi_inference_imgsz,
+                classes=self._player_class_ids,
+                verbose=False,
+                stream=False,
+            )
+            if not pred or len(pred[0].boxes) == 0:
+                continue
+
+            boxes_t = pred[0].boxes
+            xyxy_np = boxes_t.xyxy.cpu().numpy().astype(np.float32)
+            conf_np = boxes_t.conf.cpu().numpy().astype(np.float32)
+            cls_np = boxes_t.cls.cpu().numpy().astype(np.int32)
+            n = int(cls_np.shape[0])
+            glob_boxes: list[tuple[float, float, float, float]] = []
+            meta: list[tuple[float, int]] = []
+            for i in range(n):
+                cid = int(cls_np[i])
+                if self._role_by_class_id.get(cid, ObjectRole.OTHER) is not ObjectRole.PLAYER:
+                    continue
+                gx1 = float(xyxy_np[i, 0]) + float(rx1)
+                gy1 = float(xyxy_np[i, 1]) + float(ry1)
+                gx2 = float(xyxy_np[i, 2]) + float(rx1)
+                gy2 = float(xyxy_np[i, 3]) + float(ry1)
+                glob_boxes.append((gx1, gy1, gx2, gy2))
+                meta.append((float(conf_np[i]), cid))
+
+            if not glob_boxes:
+                continue
+
+            bi = pick_best_by_iou(glob_boxes, last.xyxy)
+            if bi is None:
+                continue
+            best_box = glob_boxes[bi]
+            if bbox_iou(best_box, last.xyxy) < self._settings.roi_min_iou_with_last:
+                continue
+
+            conflict = False
+            for inst in primary.instances:
+                if inst.track_id == tid:
+                    continue
+                if bbox_iou(best_box, inst.xyxy) > self._settings.roi_max_iou_with_other_track:
+                    conflict = True
+                    break
+            if conflict:
+                continue
+            for prev_extra in extra:
+                if bbox_iou(best_box, prev_extra.xyxy) > self._settings.roi_max_iou_with_other_track:
+                    conflict = True
+                    break
+            if conflict:
+                continue
+
+            conf_v, cid = meta[bi]
+            yolo_name = self._class_names.get(cid, str(cid))
+            extra.append(
+                TrackedInstance(
+                    track_id=tid,
+                    xyxy=best_box,
+                    confidence=conf_v,
+                    yolo_class_id=cid,
+                    yolo_name=yolo_name,
+                    role=ObjectRole.PLAYER,
+                )
+            )
+            if self._settings.debug_tracking:
+                logger.debug(
+                    "roi_player_recovery frame=%s track_id=%s iou_vs_last=%.3f",
+                    frame_index,
+                    tid,
+                    bbox_iou(best_box, last.xyxy),
+                )
+
+        if not extra:
+            return primary
+
+        return FrameTracks(
+            frame_index=frame_index,
+            timestamp_sec=timestamp_sec,
+            instances=primary.instances + tuple(extra),
+        )
 
     def _boxes_to_frame_tracks(
         self,
@@ -214,3 +410,6 @@ class ObjectTracker:
         self._class_names.clear()
         self._ball_class_ids.clear()
         self._track_class_ids.clear()
+        self._player_class_ids.clear()
+        self._prev_player_by_id.clear()
+        self._roi_lost_streak.clear()
