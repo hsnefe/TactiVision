@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tactivision"
+version = "0.1.0"
+description = "Football broadcast analysis (vision engine + future API/front-end scaffolding)"
+readme = "docs/README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+tactivision = "main:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["VisionEngine*"]
