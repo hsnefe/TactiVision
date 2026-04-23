@@ -23,3 +23,8 @@ __pycache__/
 
 # Local tracking/debug artifacts
 *.jsonl
+
+# Local packaging/build artifacts
+*.egg-info/
+python
+src/python
