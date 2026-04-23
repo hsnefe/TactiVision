@@ -12,6 +12,8 @@ from VisionEngine.debug.player_tracking_debugger import PlayerTrackingDebugger
 from VisionEngine.io.track_log import TrackingJsonlWriter
 from VisionEngine.io.video import VideoProperties, VideoReader, VideoWriter
 from VisionEngine.metrics.homography import FieldMapper
+from VisionEngine.metrics.play_area import PitchPlayArea
+from VisionEngine.schemas.ball_types import FrameTrackingOutput
 from VisionEngine.schemas.schema import ObjectRole
 from VisionEngine.tracking.ball_temporal import BallTemporalBridge
 from VisionEngine.tracking.object_tracker import ObjectTracker
@@ -28,6 +30,15 @@ class AnalysisPipeline:
         self._possession = PossessionEstimator(settings)
         self._camera_pan = CameraPanEstimator(settings)
         self._field = FieldMapper(settings)
+        poly = settings.play_area_polygon
+        poly_ok = poly is not None and len(poly) >= 3
+        self._play_area = PitchPlayArea(
+            corners=poly if poly_ok else None,
+            corners_normalized=settings.play_area_coords_normalized,
+            enabled=bool(settings.play_area_mask_enabled and poly_ok),
+            ball_max_diag_frac=settings.ball_max_diag_frac_of_min_side,
+            ball_max_area_frac=settings.ball_max_area_frac_of_frame,
+        )
         self._renderer = AnnotationRenderer()
         self._ball_bridge = BallTemporalBridge(settings.ball_max_gap_frames)
         self._player_debugger = PlayerTrackingDebugger(
@@ -54,6 +65,7 @@ class AnalysisPipeline:
         self._camera_pan.reset()
         self._field.reset()
         self._field.configure_from_settings()
+        self._play_area.reset()
 
         log_writer: TrackingJsonlWriter | None = None
         if self._settings.tracks_log_path is not None:
@@ -98,7 +110,11 @@ class AnalysisPipeline:
             ft_out = self._tracker.update(
                 frame, frame_index=frame_index, timestamp_sec=t_sec
             )
-            tracks = ft_out.tracks
+            tracks = self._play_area.filter_tracks(ft_out.tracks, frame.shape)
+            raw_balls = self._play_area.filter_raw_balls(
+                ft_out.raw_ball_detections, frame.shape
+            )
+            ft_out = FrameTrackingOutput(tracks=tracks, raw_ball_detections=raw_balls)
             if self._settings.debug_player_tracking:
                 h, w = frame.shape[:2]
                 self._player_debugger.update(

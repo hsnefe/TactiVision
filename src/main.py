@@ -18,6 +18,29 @@ def _default_output_path(input_path: Path) -> Path:
     return input_path.with_name(f"{stem}_analyzed.mp4")
 
 
+def _parse_play_area_polygon(s: str) -> tuple[tuple[float, float], ...]:
+    """
+    Parse "x,y;x,y;..." into a tuple of vertices.
+
+    Raises ValueError on invalid input.
+    """
+    s = s.strip()
+    if not s:
+        raise ValueError("empty polygon string")
+    verts: list[tuple[float, float]] = []
+    for part in s.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "," not in part:
+            raise ValueError(f"expected 'x,y', got {part!r}")
+        xs, ys = part.split(",", 1)
+        verts.append((float(xs.strip()), float(ys.strip())))
+    if len(verts) < 3:
+        raise ValueError("play area polygon needs at least 3 vertices")
+    return tuple(verts)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Football video analysis: YOLO + tracking + teams + possession."
@@ -199,6 +222,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable optional top-down / homography stage.",
     )
     p.add_argument(
+        "--play-area-polygon",
+        type=str,
+        default=None,
+        help=(
+            "Pitch polygon as semicolon-separated points \"x,y\" (3+ vertices). "
+            "Example: \"120,200;1800,220;1750,980;150,950\". "
+            "Use with --play-area-normalized for 0..1 coordinates."
+        ),
+    )
+    p.add_argument(
+        "--play-area-normalized",
+        action="store_true",
+        help="Interpret --play-area-polygon coordinates as fractions of frame width/height.",
+    )
+    p.add_argument(
+        "--ball-max-diag-frac",
+        type=float,
+        default=0.12,
+        help=(
+            "Inside play-area: max ball bbox diagonal as fraction of min(frame_w, frame_h). "
+            "Smaller rejects oversized sideline false balls."
+        ),
+    )
+    p.add_argument(
+        "--ball-max-area-frac",
+        type=float,
+        default=0.003,
+        help="Inside play-area: max ball bbox area as fraction of full frame area.",
+    )
+    p.add_argument(
         "--no-teams",
         action="store_true",
         help="Disable jersey-based team colors (players use default role color).",
@@ -231,6 +284,16 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(level=logging.INFO)
 
     overrides = parse_class_role_overrides(args.class_role_override)
+
+    play_poly: tuple[tuple[float, float], ...] | None = None
+    play_mask_on = False
+    if args.play_area_polygon:
+        try:
+            play_poly = _parse_play_area_polygon(args.play_area_polygon)
+            play_mask_on = True
+        except ValueError as e:
+            print(f"Invalid --play-area-polygon: {e}", file=sys.stderr)
+            return 1
 
     debug_persons = bool(args.debug_persons)
     ball_debug = not args.no_ball_debug and not debug_persons
@@ -268,6 +331,11 @@ def main(argv: list[str] | None = None) -> int:
         enable_top_down=not args.no_topdown,
         team_classification_enabled=teams_on,
         team_history_frames=args.team_history,
+        play_area_mask_enabled=play_mask_on,
+        play_area_polygon=play_poly,
+        play_area_coords_normalized=bool(args.play_area_normalized),
+        ball_max_diag_frac_of_min_side=args.ball_max_diag_frac,
+        ball_max_area_frac_of_frame=args.ball_max_area_frac,
     )
 
     pipeline = AnalysisPipeline(settings)

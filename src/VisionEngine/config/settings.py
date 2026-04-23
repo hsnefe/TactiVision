@@ -149,6 +149,32 @@ class Settings:
     pitch_corners_image: Optional[tuple[tuple[float, float], ...]] = field(default=None)
     """Four points TL, TR, BR, BL in image space for homography (optional)."""
 
+    play_area_mask_enabled: bool = False
+    """
+    When True and ``play_area_polygon`` has at least three points, drop ball / player /
+    referee detections whose geometry falls outside the pitch polygon (sideline staff,
+    bench objects misclassified as ball, etc.).
+    """
+
+    play_area_polygon: Optional[tuple[tuple[float, float], ...]] = None
+    """
+    Closed pitch region in image space: three or more ``(x, y)`` vertices (order does not
+    matter for ``pointPolygonTest`` as long as the polygon is simple). When
+    ``play_area_coords_normalized`` is True, each coordinate is ``0..1`` times frame size.
+    """
+
+    play_area_coords_normalized: bool = False
+    """If True, ``play_area_polygon`` values are fractions of frame width/height."""
+
+    ball_max_diag_frac_of_min_side: float = 0.12
+    """
+    Max bbox diagonal (pixels) as a fraction of ``min(frame_w, frame_h)`` for a detection
+    to count as ball *inside* the play-area polygon. Rejects oversized sideline false balls.
+    """
+
+    ball_max_area_frac_of_frame: float = 0.003
+    """Max ``bbox_area / (W*H)`` for ball hypotheses inside the polygon."""
+
     def __post_init__(self) -> None:
         self.input_video = Path(self.input_video)
         self.output_video = Path(self.output_video)
