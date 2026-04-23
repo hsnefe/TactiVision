@@ -38,6 +38,7 @@ class ObjectTracker:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._model: Any = None
+        self._aux_model: Any = None
         self._role_by_class_id: dict[int, ObjectRole] = {}
         self._class_names: dict[int, str] = {}
         self._ball_class_ids: list[int] = []
@@ -57,6 +58,16 @@ class ObjectTracker:
             ) from e
 
         self._model = YOLO(self._settings.model_path)
+        # Separate model instance for auxiliary ``predict`` calls (ball-only
+        # raw predict and ROI player recovery). We MUST NOT reuse ``self._model``
+        # for plain ``predict`` calls: ``YOLO.track(persist=True)`` registers
+        # ``on_predict_postprocess_end`` as a model-level callback which fires
+        # on *every* ``predict`` on the same instance, feeding the partial
+        # detections into the ByteTrack state and corrupting player track IDs
+        # (lost players never recover, even with a new ID). Using a second
+        # instance keeps the main tracker state clean.
+        if not self._settings.debug_persons:
+            self._aux_model = YOLO(self._settings.model_path)
         names = getattr(self._model, "names", None)
         if not isinstance(names, dict):
             raise RuntimeError("YOLO model has no valid .names dict.")
@@ -98,11 +109,19 @@ class ObjectTracker:
             logger.debug("ObjectTracker.reset()")
 
     def _raw_ball_predict(self, frame: np.ndarray) -> tuple[RawBallDetection, ...]:
-        """Low-threshold, ball-class-only detections for recall + debug (yellow overlay)."""
-        if not self._ball_class_ids or self._model is None:
+        """Low-threshold, ball-class-only detections for recall + debug (yellow overlay).
+
+        Runs on a dedicated ``self._aux_model`` instance so this ``predict``
+        never triggers the ByteTrack ``on_predict_postprocess_end`` callback
+        registered on ``self._model`` by ``track(persist=True)``. Firing that
+        callback with a ball-only detection set would mark every player track
+        as lost on every frame and break new-ID recovery after a track loss.
+        """
+        aux_model = self._aux_model or self._model
+        if not self._ball_class_ids or aux_model is None:
             return ()
 
-        pred = self._model.predict(
+        pred = aux_model.predict(
             source=frame,
             conf=self._settings.ball_conf_threshold,
             iou=self._settings.iou_threshold,
@@ -163,15 +182,17 @@ class ObjectTracker:
             raise RuntimeError(f"Tracking failed at frame {frame_index}: {e}") from e
 
         primary = self._boxes_to_frame_tracks(results, frame_index, timestamp_sec)
-        if self._settings.debug_persons:
+        if self._settings.debug_persons or not self._settings.roi_recovery_enabled:
+            # Like --debug_persons: emit raw tracker output so that a player
+            # reappearing with a new ByteTrack ID is rendered immediately on
+            # the next frame instead of being suppressed by the identity
+            # preservation pipeline below.
             return FrameTrackingOutput(tracks=primary, raw_ball_detections=raw_balls)
 
         primary = self._relabel_lost_players_from_primary_nearby(primary, frame_index)
         self._update_roi_lost_streak(primary)
-        merged = (
-            self._merge_roi_player_recovery(frame, frame_index, timestamp_sec, primary)
-            if self._settings.roi_recovery_enabled
-            else primary
+        merged = self._merge_roi_player_recovery(
+            frame, frame_index, timestamp_sec, primary
         )
         self._refresh_prev_player_state(merged)
         return FrameTrackingOutput(tracks=merged, raw_ball_detections=raw_balls)
@@ -321,8 +342,13 @@ class ObjectTracker:
         person-only ``predict`` on an expanded crop and inject a synthetic
         :class:`TrackedInstance` with the **same** ``track_id`` so downstream
         stages can keep continuity until the main tracker sees the player again.
+
+        Uses ``self._aux_model`` so this ``predict`` does not trigger the
+        ByteTrack tracker callback registered on ``self._model`` (which would
+        corrupt player tracks).
         """
-        if not self._player_class_ids or self._model is None:
+        aux_model = self._aux_model or self._model
+        if not self._player_class_ids or aux_model is None:
             return primary
 
         h, w = int(frame.shape[0]), int(frame.shape[1])
@@ -363,7 +389,7 @@ class ObjectTracker:
             if roi.size == 0:
                 continue
 
-            pred = self._model.predict(
+            pred = aux_model.predict(
                 source=roi,
                 conf=self._settings.roi_conf_threshold,
                 iou=self._settings.iou_threshold,
@@ -512,6 +538,7 @@ class ObjectTracker:
 
     def close(self) -> None:
         self._model = None
+        self._aux_model = None
         self._role_by_class_id.clear()
         self._class_names.clear()
         self._ball_class_ids.clear()

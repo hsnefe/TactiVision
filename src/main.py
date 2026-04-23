@@ -37,8 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--model",
         type=str,
-        default="yolov8s.pt",
-        help="Ultralytics YOLO weights (yolov8s recommended over nano for small ball).",
+        default="yolo11n.pt",
+        help="Ultralytics YOLO weights file (default: yolo11n.pt).",
     )
     p.add_argument(
         "--conf",
@@ -70,9 +70,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable yellow/red/blue ball debug overlay (faster draw).",
     )
     p.add_argument(
+        "--roi-recovery",
+        action="store_true",
+        help=(
+            "Enable the aggressive identity-preservation pipeline for players "
+            "(relabel new IDs to recently-lost nearby IDs + ROI second-pass "
+            "person predict). Off by default so a player re-detected with a "
+            "new ID is rendered immediately (matches --debug_persons)."
+        ),
+    )
+    p.add_argument(
         "--no-roi-recovery",
         action="store_true",
-        help="Disable ROI second-pass person predict around primary-missed player tracks.",
+        help=(
+            "Deprecated alias: ROI recovery is now off by default. Kept for "
+            "backward compatibility; takes precedence over --roi-recovery."
+        ),
     )
     p.add_argument(
         "--roi-conf",
@@ -221,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
 
     debug_persons = bool(args.debug_persons)
     ball_debug = not args.no_ball_debug and not debug_persons
-    roi_on = not args.no_roi_recovery and not debug_persons
+    roi_on = bool(args.roi_recovery) and not args.no_roi_recovery and not debug_persons
     teams_on = not args.no_teams and not debug_persons
 
     settings = Settings(

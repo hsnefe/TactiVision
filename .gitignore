@@ -16,3 +16,10 @@ __pycache__/
 
 # Downloaded YOLO weights
 *.pt
+
+# Local virtual environments
+.venv/
+.venv_gpu/
+
+# Local tracking/debug artifacts
+*.jsonl

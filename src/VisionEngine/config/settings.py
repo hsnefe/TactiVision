@@ -16,8 +16,8 @@ class Settings:
 
     input_video: Path
     output_video: Path
-    model_path: str = "yolov8s.pt"
-    """Default YOLOv8 small — better small-object recall than ``yolov8n.pt``."""
+    model_path: str = "yolo11n.pt"
+    """Default YOLO11 nano model path."""
 
     conf_threshold: float = 0.22
     """Main ``track()`` confidence; slightly below 0.25 to help marginal detections."""
@@ -38,8 +38,19 @@ class Settings:
     ball_debug_overlay: bool = True
     """Draw yellow raw / red tracked / blue estimated ball diagnostics on the output video."""
 
-    roi_recovery_enabled: bool = True
-    """If True, run a second low-threshold person-only ``predict`` on ROIs around lost players."""
+    roi_recovery_enabled: bool = False
+    """
+    If True, enable the aggressive identity-preservation pipeline for players:
+    ``_relabel_lost_players_from_primary_nearby`` rebinds new tracker IDs to
+    recently lost IDs near the same location, and a second low-threshold
+    person-only ``predict`` is run on ROIs around lost players to inject
+    synthetic tracks with the same ``track_id``.
+
+    Default is ``False`` so that in (team-)classification runs a player who is
+    lost by ByteTrack and re-detected with a new ID is rendered immediately,
+    matching ``--debug_persons`` behavior. Enable with ``--roi-recovery`` when
+    ID continuity across short occlusions matters more than freshness.
+    """
 
     roi_conf_threshold: float = 0.08
     """Confidence for ROI-only person ``predict`` (typically below main ``conf_threshold``)."""
