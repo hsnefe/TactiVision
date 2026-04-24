@@ -148,6 +148,10 @@ class AnalysisPipeline:
                 raw_ball_detections=ft_out.raw_ball_detections,
                 estimated_ball_center=estimated_ball_center,
                 ball_debug_overlay=ball_debug,
+                pitch_filter_debug=self._settings.pitch_filter_debug,
+                pitch_filter_contour=ft_out.pitch_contour,
+                pre_pitch_filter_tracks=ft_out.pre_pitch_filter_tracks,
+                pitch_filter_mask=ft_out.pitch_mask,
             )
             writer.write(annotated)
             frame_index += 1

@@ -9,6 +9,11 @@ import numpy as np
 
 from VisionEngine.config.class_mapping import build_role_map_from_model, merge_role_overrides
 from VisionEngine.config.settings import Settings
+from VisionEngine.detection.pitch_filter import (
+    extract_pitch_mask,
+    filter_frame_tracks_by_pitch,
+    filter_raw_ball_detections_by_pitch,
+)
 from VisionEngine.schemas.ball_types import FrameTrackingOutput, RawBallDetection
 from VisionEngine.schemas.schema import FrameTracks, ObjectRole, TrackedInstance
 from VisionEngine.tracking.roi_recovery import (
@@ -187,15 +192,55 @@ class ObjectTracker:
             # reappearing with a new ByteTrack ID is rendered immediately on
             # the next frame instead of being suppressed by the identity
             # preservation pipeline below.
-            return FrameTrackingOutput(tracks=primary, raw_ball_detections=raw_balls)
+            merged = primary
+        else:
+            primary = self._relabel_lost_players_from_primary_nearby(primary, frame_index)
+            self._update_roi_lost_streak(primary)
+            merged = self._merge_roi_player_recovery(
+                frame, frame_index, timestamp_sec, primary
+            )
+            self._refresh_prev_player_state(merged)
 
-        primary = self._relabel_lost_players_from_primary_nearby(primary, frame_index)
-        self._update_roi_lost_streak(primary)
-        merged = self._merge_roi_player_recovery(
-            frame, frame_index, timestamp_sec, primary
+        return self._apply_pitch_filter_output(frame, merged, raw_balls)
+
+    def _apply_pitch_filter_output(
+        self,
+        frame: np.ndarray,
+        merged: FrameTracks,
+        raw_balls: tuple[RawBallDetection, ...],
+    ) -> FrameTrackingOutput:
+        """Optional grass-pitch polygon filter + min bbox area (after full track merge)."""
+        if not self._settings.pitch_filter_enabled:
+            return FrameTrackingOutput(tracks=merged, raw_ball_detections=raw_balls)
+
+        pitch_mask, contour = extract_pitch_mask(
+            frame,
+            hsv_lower=self._settings.team_grass_hsv_lower,
+            hsv_upper=self._settings.team_grass_hsv_upper,
+            morph_kernel_size=self._settings.pitch_filter_morph_kernel,
+            process_long_side=self._settings.pitch_mask_process_long_side,
         )
-        self._refresh_prev_player_state(merged)
-        return FrameTrackingOutput(tracks=merged, raw_ball_detections=raw_balls)
+        pre = merged if self._settings.pitch_filter_debug else None
+        filtered_tracks = filter_frame_tracks_by_pitch(
+            merged,
+            contour,
+            min_area=self._settings.pitch_min_detection_area,
+            pass_through_if_no_contour=False,
+        )
+        filtered_raw = filter_raw_ball_detections_by_pitch(
+            raw_balls,
+            contour,
+            min_area=self._settings.pitch_min_detection_area,
+            pass_through_if_no_contour=False,
+        )
+        mask_for_debug = pitch_mask if self._settings.pitch_filter_debug else None
+        return FrameTrackingOutput(
+            tracks=filtered_tracks,
+            raw_ball_detections=filtered_raw,
+            pre_pitch_filter_tracks=pre,
+            pitch_contour=contour,
+            pitch_mask=mask_for_debug,
+        )
 
     def _update_roi_lost_streak(self, primary: FrameTracks) -> None:
         """Primary missed tracks increment streak; primary hits reset it."""

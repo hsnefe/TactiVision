@@ -209,6 +209,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=21,
         help="Frames of majority-vote history per track for team stabilization (odd).",
     )
+    p.add_argument(
+        "--pitch-filter",
+        action="store_true",
+        help=(
+            "Keep only YOLO tracks (and raw ball boxes) whose bbox center lies inside "
+            "the largest green (grass) region; also drops very small boxes."
+        ),
+    )
+    p.add_argument(
+        "--pitch-min-area",
+        type=float,
+        default=400.0,
+        help="Minimum bbox area in pixels after pitch filter (width * height).",
+    )
+    p.add_argument(
+        "--pitch-mask-long-side",
+        type=int,
+        default=640,
+        help="Resize frame so max(H,W) is at most this before HSV pitch segmentation (speed).",
+    )
+    p.add_argument(
+        "--pitch-morph-k",
+        type=int,
+        default=5,
+        help="Odd kernel size for pitch grass mask morphology (open+close).",
+    )
+    p.add_argument(
+        "--pitch-filter-debug",
+        action="store_true",
+        help="Draw pitch contour, red pre-filter boxes, green kept boxes (simplified overlay).",
+    )
     return p
 
 
@@ -268,6 +299,11 @@ def main(argv: list[str] | None = None) -> int:
         enable_top_down=not args.no_topdown,
         team_classification_enabled=teams_on,
         team_history_frames=args.team_history,
+        pitch_filter_enabled=args.pitch_filter,
+        pitch_min_detection_area=args.pitch_min_area,
+        pitch_mask_process_long_side=args.pitch_mask_long_side,
+        pitch_filter_morph_kernel=args.pitch_morph_k,
+        pitch_filter_debug=args.pitch_filter_debug,
     )
 
     pipeline = AnalysisPipeline(settings)

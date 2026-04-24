@@ -16,6 +16,7 @@ from VisionEngine.visualization.ball_debug_draw import (
     draw_raw_ball_detections,
     draw_tracked_ball_highlight,
 )
+from VisionEngine.visualization.pitch_debug_draw import draw_pitch_filter_debug
 from VisionEngine.visualization.track_draw import draw_frame_tracks
 
 
@@ -36,6 +37,10 @@ class AnnotationRenderer:
         raw_ball_detections: tuple[RawBallDetection, ...] = (),
         estimated_ball_center: Optional[tuple[float, float]] = None,
         ball_debug_overlay: bool = False,
+        pitch_filter_debug: bool = False,
+        pitch_filter_contour: Optional[np.ndarray] = None,
+        pre_pitch_filter_tracks: Optional[FrameTracks] = None,
+        pitch_filter_mask: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Draw tracks; optionally ball debug layers (yellow raw, red tracked emphasis, blue estimate).
@@ -47,13 +52,22 @@ class AnnotationRenderer:
         out = frame.copy()
         if ball_debug_overlay:
             out = draw_raw_ball_detections(out, raw_ball_detections)
-        out = draw_frame_tracks(
-            out,
-            tracks,
-            thickness=2,
-            show_role=True,
-            track_to_team=track_to_team,
-        )
+        if pitch_filter_debug:
+            out = draw_pitch_filter_debug(
+                out,
+                contour=pitch_filter_contour,
+                pre_tracks=pre_pitch_filter_tracks,
+                filtered_tracks=tracks,
+                pitch_mask=pitch_filter_mask,
+            )
+        else:
+            out = draw_frame_tracks(
+                out,
+                tracks,
+                thickness=2,
+                show_role=True,
+                track_to_team=track_to_team,
+            )
         if ball_debug_overlay:
             out = draw_tracked_ball_highlight(out, tracks)
             out = draw_estimated_ball(out, estimated_ball_center)

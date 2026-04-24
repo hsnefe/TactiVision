@@ -149,6 +149,21 @@ class Settings:
     pitch_corners_image: Optional[tuple[tuple[float, float], ...]] = field(default=None)
     """Four points TL, TR, BR, BL in image space for homography (optional)."""
 
+    pitch_filter_enabled: bool = False
+    """If True, drop YOLO tracks (and raw ball boxes) whose bbox center is outside the grass pitch."""
+
+    pitch_min_detection_area: float = 400.0
+    """Minimum bbox area in pixels ``(x2-x1)*(y2-y1)`` after pitch mask (crowd / noise)."""
+
+    pitch_mask_process_long_side: int = 640
+    """Max long side for HSV/morphology before scaling contour back to full resolution."""
+
+    pitch_filter_morph_kernel: int = 5
+    """Odd kernel size for pitch green mask open+close (see :func:`extract_pitch_mask`)."""
+
+    pitch_filter_debug: bool = False
+    """Draw pitch contour, red pre-filter boxes, and green kept boxes on the output video."""
+
     def __post_init__(self) -> None:
         self.input_video = Path(self.input_video)
         self.output_video = Path(self.output_video)
