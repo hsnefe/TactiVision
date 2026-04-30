@@ -12,7 +12,7 @@ from VisionEngine.debug.player_tracking_debugger import PlayerTrackingDebugger
 from VisionEngine.io.track_log import TrackingJsonlWriter
 from VisionEngine.io.video import VideoProperties, VideoReader, VideoWriter
 from VisionEngine.metrics.homography import FieldMapper
-from VisionEngine.schemas.schema import ObjectRole
+from VisionEngine.schemas.schema import FrameTracks, ObjectRole, TrackedInstance
 from VisionEngine.tracking.ball_temporal import BallTemporalBridge
 from VisionEngine.tracking.object_tracker import ObjectTracker
 from VisionEngine.visualization.renderer import AnnotationRenderer
@@ -123,6 +123,9 @@ class AnalysisPipeline:
                 poss = self._possession.update(frame, tracks, track_to_team)
             else:
                 track_to_team = self._teams.update(frame, tracks)
+                id_remap = self._teams.track_id_remap
+                if id_remap:
+                    tracks = _remap_track_ids(tracks, id_remap)
                 poss = self._possession.update(frame, tracks, track_to_team)
             team_enabled = (
                 self._settings.team_classification_enabled
@@ -151,3 +154,25 @@ class AnalysisPipeline:
             )
             writer.write(annotated)
             frame_index += 1
+
+
+def _remap_track_ids(tracks: FrameTracks, remap: dict[int, int]) -> FrameTracks:
+    """Return a new ``FrameTracks`` with raw track IDs replaced by effective IDs where remapped."""
+    remapped: list[TrackedInstance] = []
+    for inst in tracks.instances:
+        effective_id = remap.get(inst.track_id, inst.track_id)
+        if effective_id != inst.track_id:
+            inst = TrackedInstance(
+                track_id=effective_id,
+                xyxy=inst.xyxy,
+                confidence=inst.confidence,
+                yolo_class_id=inst.yolo_class_id,
+                yolo_name=inst.yolo_name,
+                role=inst.role,
+            )
+        remapped.append(inst)
+    return FrameTracks(
+        frame_index=tracks.frame_index,
+        timestamp_sec=tracks.timestamp_sec,
+        instances=tuple(remapped),
+    )

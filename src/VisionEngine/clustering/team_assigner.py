@@ -60,3 +60,8 @@ class TeamAssigner:
 
     def team_for_track(self, track_id: int) -> Optional[int]:
         return self._last_teams.get(track_id)
+
+    @property
+    def track_id_remap(self) -> dict[int, int]:
+        """Return ``raw_track_id -> effective_track_id`` map built by lost-track recovery."""
+        return self._classifier.track_id_remap
