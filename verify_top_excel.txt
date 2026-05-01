@@ -1,0 +1,16 @@
+Ball Tracking
+Test case ID | Title | Description | Inputs | Preconditions | Expected results | Status
+TC-BALL-POS-001 | Top Sahada Tekken Sürekli Takip | Tek top, kesintisiz gorunurlukte topun her karede yakalanmasi | Stabil kamera, tek top; python src/main.py --video <video> --output <out> | Model agirliklari yuklu ve video acilabilir | Top kutusu cogu karede topu dogru konumda takip eder | Not run
+TC-BALL-POS-002 | Hizli Sut Sonrasi Takip Devam | Top hizlandiginda izleme devam eder | Sut iceren klip | Yeterli FPS ve blur sinirli | Top hizli hareketten sonra yeniden bulunur ve izleme kopmaz | Not run
+TC-BALL-POS-003 | Kismi Ortulmede Takip Kurtarma | Oyuncu ayagi ile kisa sure ortulmede takip geri gelir | Kisa occlusion iceren video | Takipci aktif | Top ortulme bitince 1-2 sn icinde tekrar dogru takip edilir | Not run
+TC-BALL-POS-004 | Kamera Kaymasinda Topu Koruma | Pan/tilt sirasinda top takibi korunur | Kamera hareketi olan mac videosu | Goruntu akisi kesintisiz | Kamera kayarken top IDsi ve kutusu mantikli sekilde devam eder | Not run
+TC-BALL-NEG-001 | Top Gorunmediginde Sahte Pozitif Yok | Karede top yokken top uretmez | Topun kadraj disi oldugu sahneler | Model calisiyor | Top olmayan karelerde top tespiti uretilmez veya cok dusuk olur | Not run
+TC-BALL-NEG-002 | Beyaz Nesneleri Top Sanmama | Forma/rek lam gibi benzer nesneleri top sanmaz | Top disinda beyaz yuvarlak nesneli video | Ayni isik kosullari | Top etiketi yanlis nesnelere surekli atanmaz | Not run
+TC-BALL-NEG-003 | Bozuk Video Girdisinde Hata Yonetimi | Gecer siz ya da bozuk video dosyasinda kontrollu hata verir | python src/main.py --video corrupted.mp4 | Bozuk dosya hazir | Uygulama cokmeden anlamli hata mesaji verir | Not run
+TC-BALL-NEG-004 | Desteklenmeyen Uzantida Davranis | Desteklenmeyen dosya uzantisini reddeder | .txt veya uyumsuz media dosyasi | CLI erisilebilir | Uygulama girdi dogrulama hatasi verir, islem baslatilmaz | Not run
+TC-BALL-EDGE-001 | Top Cizgi Uzerinde Sinir Durumu | Top saha cizgisine yakin iken dogru lokalizasyon | Cizgiye yakin top hareketi olan klip | Yeterli cozumurluk | Kutu merkezi topun ustunde kalir, cizgi ile karismaz | Not run
+TC-BALL-EDGE-002 | Cok Kisa Sure Gorunen Top | Top 2-3 kare gorunup ciksa bile algi kaydi tutulur | Kisa gorunumlu top klibi | Takip loglari acik | Gorunen karelerde tespit olusur, kayit bozulmaz | Not run
+TC-BALL-EDGE-003 | Dusuk Isikta Takip Kararliligi | Aksam/karanlik sahnede takip performansi | Dusuk isikli mac videosu | Parazitli goruntu kabul | Tespit frekansi azalabilir ama sistem stabil calisir | Not run
+TC-BALL-EDGE-004 | Motion Blur Altinda Takip | Asiri blur karelerinde yanlis pozitif kontrolu | Hizli kamera ve blur iceren video | Shutter dusuk | Blur aninda gecici kayip olabilir ancak sahte kutu patlamasi olmaz | Not run
+TC-BALL-EDGE-005 | Birden Fazla Top Benzeri Nesne | Antrenman topu veya ikinci top benzeri nesnede davranis | Sahada birden fazla yuvarlak nesneli klip | Sistem tek resmi top hedefli | Sistem en olasi oyun topuna odaklanir veya belirsizlikte tutarli davranir | Not run
+TC-BALL-EDGE-006 | Yuksek Cozunurluk Performans Siniri | 4K videoda takip dogrulugu ve sure | 4K input video | Donanim gereksinimi karsilanir | Takip calisir; isleme suresi kabul edilebilir seviyede kalir | Not run

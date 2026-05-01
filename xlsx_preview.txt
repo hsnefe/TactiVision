@@ -1,0 +1,11 @@
+1:  |  |  |  |  |  |  | TactiVision |  |  |  |  |  |  | 
+3: Business use case: | Team Classification | Version: | 1 |  |  |  | <openpyxl.worksheet.formula.ArrayFormula object at 0x0000013A44908AF0> | =COUNTIF(G9:G995, "Pass") | =COUNTIF(G9:G995, "Fail") | =COUNTIF(G9:G995, "Skip") |  |  |  | 
+4: Created by: | Hasan Efe Ünal |  |  |  |  |  |  |  |  |  |  |  |  | 
+5: Created at: | 2025-04-23 00:00:00 | Executed at: |  |  |  |  |  |  |  |  |  |  |  | 
+6: Last updated by: | Hasan Efe Ünal | Executed by: | Hasan Efe Ünal |  |  |  |  |  |  |  |  |  |  | 
+7: Last updated at: | 2025-04-23 00:00:00 |  |  |  |  |  | Not run | Passed | Failed | Skipped |  |  |  | 
+8: Test case ID | Title | Description | Inputs | Preconditions | Expected results | Status | Actual results | Stakeholder comments |  |  |  |  |  | 
+9: TC-TEAM-POS-001 |  Team Labels Appear When Enabled | Players receive team colors when team classification is enabled | 10-20 sec video with clearly different jersey colors for two teams; run: python src/main.py --video <video> --output <out> | Do not use --no-teams | After enough players are visible, player boxes are labeled/colored as T0/T1; number of gray (unknown) players decreases | Pass | [To be filled during test execution] | saddas |  |  |  |  |  | 
+10: TC-TEAM-POS-002 |  Team Labels Disabled With --no-teams |  Team coloring is fully disabled when team classification is off |  Same video; python src/main.py --video <video> --output <out_no_teams> --no-teams |  | Player boxes remain role-colored; no T0/T1 labels are shown | Fail |  |  |  |  |  |  |  | 
+11: TC-TEAM-POS-003 | Team Pipeline Bypassed In Debug Persons Mode | Team pipeline is bypassed in debug_persons mode | python src/main.py --video <video> --output <out_debug> --debug_persons |  |  | Skip |  |  |  |  |  |  |  | 
+12: UAT-004 |  |  |  |  |  |  |  |  |  |  |  |  |  | 
