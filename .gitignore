@@ -1,5 +1,10 @@
 *.png
 
+# Secrets — never commit real keys. Copy `.env.example` → `.env` locally.
+.env
+.env.*
+!.env.example
+
 # Python
 __pycache__/
 *.py[cod]
@@ -20,6 +25,39 @@ __pycache__/
 # Local virtual environments
 .venv/
 .venv_gpu/
+.venv_*/
+/venv/
+/env/
+
+# Cursor IDE local debug ingest (NDJSON session logs)
+.cursor/debug*.log
+
+# Test / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Coverage, fuzz, packaging
+.coverage
+coverage.xml
+*.cover
+.hypothesis/
+htmlcov/
+dist/
+build/
+*.egg
+
+# JetBrains
+.idea/
+
+# OS / editor junk
+Thumbs.db
+*.swp
+*~
+
+# Local scratch video dumps
+_tmp_*.mp4
 
 # Local tracking/debug artifacts
 *.jsonl
