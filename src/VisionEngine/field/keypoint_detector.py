@@ -16,14 +16,11 @@ pipeline does not need to care which one is in use.
 
 from __future__ import annotations
 
-import base64
-import io
 import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import cv2
 import numpy as np
 
 from VisionEngine.config.settings import Settings
@@ -177,17 +174,12 @@ class FieldKeypointDetector:
         return FieldKeypoints(xy=xy_one.astype(np.float32), confidence=conf_one.astype(np.float32))
 
     def _detect_remote(self, frame: np.ndarray) -> FieldKeypoints:
-        ok, encoded = cv2.imencode(".jpg", frame)
-        if not ok:
-            return FieldKeypoints.empty(self._num_keypoints)
-        image_b64 = base64.b64encode(encoded.tobytes()).decode("ascii")
+        # inference-sdk accepts str (URL/path), np.ndarray (BGR), or PIL.Image — not raw JPEG bytes.
         try:
             result = self._client.infer(
-                io.BytesIO(encoded.tobytes()).getvalue(),
+                frame,
                 model_id=self._settings.field_model_id,
             )
-        except TypeError:
-            result = self._client.infer(image_b64, model_id=self._settings.field_model_id)
         except Exception:
             logger.exception("Roboflow hosted inference failed; returning empty keypoints")
             return FieldKeypoints.empty(self._num_keypoints)
