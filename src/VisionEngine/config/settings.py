@@ -29,14 +29,23 @@ class Settings:
     inference_imgsz: int = 1280
     """Letterbox size for both ``track`` and ball-only ``predict`` (larger helps tiny ball)."""
 
-    ball_conf_threshold: float = 0.12
+    ball_conf_threshold: float = 0.40
     """Lower threshold on ball-class-only ``predict`` pass for recall / yellow debug overlay."""
 
-    ball_max_gap_frames: int = 8
+    ball_max_gap_frames: int = 15
     """When track loses the ball, extrapolate position for this many frames (blue overlay)."""
 
     ball_debug_overlay: bool = True
     """Draw yellow raw / red tracked / blue estimated ball diagnostics on the output video."""
+
+    ball_roi_recovery: bool = True
+    """Activates Region of Interest (ROI) scanning when the ball is lost."""
+
+    ball_roi_conf: float = 0.08
+    """Low confidence threshold for ball ROI scan."""
+
+    ball_roi_size: int = 300
+    """Pixel size (width/height) of the cropped region to search for the ball."""
 
     roi_recovery_enabled: bool = False
     """

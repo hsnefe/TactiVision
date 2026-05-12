@@ -55,13 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--ball-conf",
         type=float,
-        default=0.12,
+        default=0.35,
         help="Lower threshold for ball-class-only raw predict pass (yellow debug boxes).",
     )
     p.add_argument(
         "--ball-gap",
         type=int,
-        default=8,
+        default=15,
         help="Max frames to extrapolate ball position when track drops (blue circle).",
     )
     p.add_argument(
@@ -209,6 +209,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=21,
         help="Frames of majority-vote history per track for team stabilization (odd).",
     )
+    p.add_argument(
+        "--no-ball-roi-recovery",
+        action="store_false",
+        dest="ball_roi_recovery",
+        help="Disables Region of Interest (ROI) scanning when the ball is lost.",
+    )
+    p.add_argument(
+        "--ball-roi-conf",
+        type=float,
+        default=0.08,
+        help="Low confidence threshold for ball ROI scan.",
+    )
+    p.add_argument(
+        "--ball-roi-size",
+        type=int,
+        default=300,
+        help="Pixel size (width/height) of the cropped region to search for the ball.",
+    )
     return p
 
 
@@ -268,6 +286,9 @@ def main(argv: list[str] | None = None) -> int:
         enable_top_down=not args.no_topdown,
         team_classification_enabled=teams_on,
         team_history_frames=args.team_history,
+        ball_roi_recovery=args.ball_roi_recovery,
+        ball_roi_conf=args.ball_roi_conf,
+        ball_roi_size=args.ball_roi_size,
     )
 
     pipeline = AnalysisPipeline(settings)
