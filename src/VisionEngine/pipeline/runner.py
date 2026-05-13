@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from VisionEngine.EventAnalytics.camera_pan import CameraPanEstimator
+from VisionEngine.EventAnalytics.duel import DuelEstimator
 from VisionEngine.EventAnalytics.possession import PossessionEstimator
 from VisionEngine.clustering.team_assigner import TeamAssigner
 from VisionEngine.config.settings import Settings
@@ -31,6 +32,7 @@ class AnalysisPipeline:
         self._tracker = ObjectTracker(settings)
         self._teams = TeamAssigner(settings)
         self._possession = PossessionEstimator(settings)
+        self._duel_estimator = DuelEstimator(settings)
         self._camera_pan = CameraPanEstimator(settings)
         self._field = FieldMapper(settings)
         self._renderer = AnnotationRenderer()
@@ -70,6 +72,7 @@ class AnalysisPipeline:
         self._player_debugger.reset()
         self._teams.reset()
         self._possession.reset()
+        self._duel_estimator.reset()
         self._camera_pan.reset()
         self._field.reset()
         self._field.configure_from_settings()
@@ -147,12 +150,14 @@ class AnalysisPipeline:
             if self._settings.debug_persons:
                 track_to_team: dict[int, int] = {}
                 poss = self._possession.update(frame, tracks, track_to_team)
+                duel_state = self._duel_estimator.update(frame, tracks, track_to_team, poss, estimated_ball_center)
             else:
                 track_to_team = self._teams.update(frame, tracks)
                 id_remap = self._teams.track_id_remap
                 if id_remap:
                     tracks = _remap_track_ids(tracks, id_remap)
                 poss = self._possession.update(frame, tracks, track_to_team)
+                duel_state = self._duel_estimator.update(frame, tracks, track_to_team, poss, estimated_ball_center)
             team_enabled = (
                 self._settings.team_classification_enabled
                 and not self._settings.debug_persons
@@ -175,6 +180,7 @@ class AnalysisPipeline:
                 tracks,
                 team_draw,
                 poss,
+                duel_state,
                 hud_text=hud,
                 raw_ball_detections=ft_out.raw_ball_detections,
                 estimated_ball_center=estimated_ball_center,

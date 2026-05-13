@@ -7,6 +7,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from VisionEngine.EventAnalytics.duel import DuelState
 from VisionEngine.EventAnalytics.possession import PossessionState
 from VisionEngine.schemas.ball_types import RawBallDetection
 from VisionEngine.schemas.schema import FrameTracks
@@ -31,6 +32,7 @@ class AnnotationRenderer:
         tracks: FrameTracks,
         track_to_team: Optional[dict[int, int]],
         possession: PossessionState,
+        duel_state: DuelState,
         hud_text: Optional[str] = None,
         *,
         raw_ball_detections: tuple[RawBallDetection, ...] = (),
@@ -81,4 +83,33 @@ class AnnotationRenderer:
                 2,
                 cv2.LINE_AA,
             )
+            
+        if duel_state.is_duel:
+            duel_txt = f"DUEL! T{duel_state.team_1_id}:{duel_state.player_1_id} vs T{duel_state.team_2_id}:{duel_state.player_2_id}"
+            cv2.putText(
+                out,
+                duel_txt,
+                (16, 96),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 0, 255),
+                3,
+                cv2.LINE_AA,
+            )
+            p1_center = None
+            p2_center = None
+            for inst in tracks.instances:
+                if inst.track_id == duel_state.player_1_id:
+                    x1, y1, x2, y2 = inst.xyxy
+                    p1_center = (int((x1+x2)/2), int((y1+y2)/2))
+                elif inst.track_id == duel_state.player_2_id:
+                    x1, y1, x2, y2 = inst.xyxy
+                    p2_center = (int((x1+x2)/2), int((y1+y2)/2))
+            
+            if p1_center and p2_center:
+                cv2.line(out, p1_center, p2_center, (0, 255, 255), 4, cv2.LINE_AA)
+                if duel_state.center_xy:
+                    cx, cy = int(duel_state.center_xy[0]), int(duel_state.center_xy[1])
+                    cv2.circle(out, (cx, cy), 40, (0, 0, 255), 3, cv2.LINE_AA)
+
         return out

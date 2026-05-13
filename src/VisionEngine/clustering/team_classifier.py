@@ -21,6 +21,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
+import cv2
 import numpy as np
 from sklearn.cluster import KMeans
 
@@ -34,6 +35,52 @@ class LostTrackRecord:
     team_id: int
     last_center_xy: tuple[float, float]
     lost_at_frame_index: int
+
+
+def _upper_torso_crop(
+    frame: np.ndarray,
+    xyxy: tuple[float, float, float, float],
+    y0_ratio: float,
+    y1_ratio: float,
+) -> Optional[np.ndarray]:
+    """Return BGR crop of upper torso region; None if invalid."""
+    h_img, w_img = frame.shape[:2]
+    x1, y1, x2, y2 = xyxy
+    x1, y1 = max(0, int(x1)), max(0, int(y1))
+    x2, y2 = min(w_img - 1, int(x2)), min(h_img - 1, int(y2))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    bh = y2 - y1
+    ya = int(y1 + bh * y0_ratio)
+    yb = int(y1 + bh * y1_ratio)
+    ya = max(y1, min(ya, y2 - 1))
+    yb = max(ya + 1, min(yb, y2))
+    return frame[ya:yb, x1:x2].copy()
+
+
+def _grass_suppressed_mean_lab(
+    bgr_crop: np.ndarray,
+    lower_hsv: tuple[int, int, int],
+    upper_hsv: tuple[int, int, int],
+    morph_kernel: int,
+) -> Optional[np.ndarray]:
+    """Mean Lab vector (3,) from non-grass pixels; fallback to full crop."""
+    if bgr_crop.size == 0 or bgr_crop.shape[0] < 2 or bgr_crop.shape[1] < 2:
+        return None
+    hsv = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2HSV)
+    grass = cv2.inRange(hsv, np.array(lower_hsv), np.array(upper_hsv))
+    mask = cv2.bitwise_not(grass)
+    if morph_kernel >= 3 and morph_kernel % 2 == 1:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_kernel, morph_kernel))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+    lab = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2LAB)
+    if cv2.countNonZero(mask) < 0.15 * mask.size:
+        pixels = lab.reshape(-1, 3).astype(np.float32)
+    else:
+        pixels = lab[mask > 0].astype(np.float32)
+        if pixels.shape[0] < 10:
+            pixels = lab.reshape(-1, 3).astype(np.float32)
+    return np.mean(pixels, axis=0)
 
 
 class TeamClassifier:
@@ -64,6 +111,9 @@ class TeamClassifier:
         self._lost_track_close_match_distance_px = 50.0
         # Verbose recovery diagnostics; prints cache state + match decisions.
         self._debug_recovery = True
+        # Temporal smoothing for team predictions
+        self._history: dict[int, list[int]] = {}
+        self._history_len = 21
 
     def reset(self) -> None:
         self._team_model = None
@@ -73,6 +123,7 @@ class TeamClassifier:
         self._prev_visible_effective_ids.clear()
         self._last_center_by_effective.clear()
         self._lost_track_cache.clear()
+        self._history.clear()
 
     @property
     def track_id_remap(self) -> dict[int, int]:
@@ -90,6 +141,19 @@ class TeamClassifier:
             return int(self._team_model.predict(player_color.reshape(1, -1))[0])
         except Exception:
             return None
+
+    def _add_to_history(self, track_id: int, team: int) -> None:
+        if track_id not in self._history:
+            self._history[track_id] = []
+        self._history[track_id].append(team)
+        if len(self._history[track_id]) > self._history_len:
+            self._history[track_id].pop(0)
+
+    def _get_stable_team(self, track_id: int) -> int:
+        hist = self._history.get(track_id, [])
+        if not hist:
+            return self._track_to_team.get(track_id, 0)
+        return Counter(hist).most_common(1)[0][0]
 
     def _prune_lost_track_cache(self, frame_index: int) -> None:
         """Drop entries older than the retention window.
@@ -308,51 +372,38 @@ class TeamClassifier:
         return model
 
     def get_player_color(self, frame: np.ndarray, inst: TrackedInstance) -> Optional[np.ndarray]:
-        """Extract one player's jersey color via top-half local KMeans."""
-        crop = self._crop_player(frame, inst.xyxy)
+        """Extract one player's jersey color via torso crop & grass suppressed LAB mean."""
+        crop = _upper_torso_crop(
+            frame,
+            inst.xyxy,
+            self._settings.team_torso_y0_ratio,
+            self._settings.team_torso_y1_ratio,
+        )
         if crop is None:
             return None
-        top = self._top_half(crop)
-        if top is None:
-            return None
-
-        h, w = top.shape[:2]
-        pixels = top.reshape(-1, 3).astype(np.float32)
-        model = self.get_clustering_model(pixels, n_clusters=2)
-        if model is None:
-            return None
-
-        labels = model.labels_.reshape(h, w)
-        corner_labels = [
-            int(labels[0, 0]),
-            int(labels[0, w - 1]),
-            int(labels[h - 1, 0]),
-            int(labels[h - 1, w - 1]),
-        ]
-        bg_cluster = Counter(corner_labels).most_common(1)[0][0]
-        if bg_cluster not in (0, 1):
-            return None
-        jersey_cluster = 1 - bg_cluster
-        if jersey_cluster not in (0, 1):
-            return None
-
-        jersey_mask = model.labels_ == jersey_cluster
-        if int(np.count_nonzero(jersey_mask)) == 0:
-            return None
-
-        center = model.cluster_centers_[jersey_cluster].astype(np.float32)
-        if center.shape != (3,):
-            return None
-        return center
+        feat = _grass_suppressed_mean_lab(
+            crop,
+            self._settings.team_grass_hsv_lower,
+            self._settings.team_grass_hsv_upper,
+            self._settings.team_grass_morph_kernel,
+        )
+        return feat
 
     def assign_team_color(self, player_colors: list[np.ndarray]) -> bool:
         """Fit global team-color KMeans from collected player jersey colors."""
-        if len(player_colors) < 2:
+        min_samples = max(self._settings.team_kmeans_min_samples, 8)
+        if len(player_colors) < min_samples:
             return False
         X = np.stack(player_colors, axis=0).astype(np.float32)
         model = self.get_clustering_model(X, n_clusters=2)
         if model is None:
             return False
+            
+        # IMPORTANT: Sort clusters by LAB 'A' channel to stabilize team 0 vs team 1
+        centers = model.cluster_centers_
+        order = np.argsort(centers[:, 1])
+        model.cluster_centers_ = centers[order]
+        
         self._team_model = model
         return True
 
@@ -381,18 +432,16 @@ class TeamClassifier:
         players = self._player_instances(tracks)
         current_raw_ids: set[int] = {inst.track_id for inst in players}
 
-        # --- Step 1: extract jersey colors for raw IDs not yet in any color store ---
+        # --- Step 1: extract jersey colors for visible IDs ---
+        frame_colors: dict[int, np.ndarray] = {}
         for inst in players:
             raw_id = inst.track_id
-            eff_id = self._raw_to_effective.get(raw_id, raw_id)
-            if eff_id in self._track_to_team:
-                continue
-            if raw_id in self._track_to_color:
-                continue
             color = self.get_player_color(frame, inst)
-            if color is None:
-                continue
-            self._track_to_color[raw_id] = color
+            if color is not None:
+                frame_colors[raw_id] = color
+                if self._team_model is None:
+                    # Accumulate for warm-up
+                    self._track_to_color[raw_id] = color
 
         # --- Step 2: fit global team model once enough features are ready ---
         if self._team_model is None:
@@ -407,24 +456,23 @@ class TeamClassifier:
                 raw_id = inst.track_id
                 center_xy = self._bbox_center(inst.xyxy)
                 eff_id = self._raw_to_effective.get(raw_id, raw_id)
+                player_color = frame_colors.get(raw_id)
+                predicted_team = self._predict_team_label(player_color)
 
                 if eff_id in self._track_to_team:
-                    # Already assigned — just update position tracking.
+                    # Already assigned — update tracking & history
                     current_effective_ids.add(eff_id)
                     self._last_center_by_effective[eff_id] = center_xy
-                    # Do NOT remove lost-track records here: ByteTrack often
-                    # flickers (one frame with this id, then lost again). Purging
-                    # the cache on every visible frame prevents recovery. Active
-                    # ids are already excluded in _match_lost_track_id.
+                    if predicted_team is not None:
+                        self._add_to_history(eff_id, predicted_team)
+                        self._track_to_team[eff_id] = self._get_stable_team(eff_id)
                     continue
 
                 # New player (not yet assigned under any effective ID).
-                player_color = self._track_to_color.get(raw_id)
-                predicted_team = self._predict_team_label(player_color)
                 if predicted_team is None:
                     continue
 
-                # Try to recover a lost-track ID from cache (skip on frame 0).
+                # Try to recover a lost-track ID from cache
                 final_team = predicted_team
                 if frame_index > 0:
                     if self._debug_recovery:
@@ -451,19 +499,19 @@ class TeamClassifier:
                                 f"[recovery] frame={frame_index} raw={raw_id} "
                                 f"-> MATCHED lost_id={eff_id} team={matched_rec.team_id}"
                             )
-                        # Carry color over to effective ID so future frames keep it.
-                        if player_color is not None:
-                            self._track_to_color[eff_id] = player_color
                         # Use the recovered record's team to keep identity stable
-                        # even when the new frame's jersey prediction is noisy.
                         final_team = matched_rec.team_id
+                        self._add_to_history(eff_id, final_team)
                     elif self._debug_recovery:
                         print(
                             f"[recovery] frame={frame_index} raw={raw_id} -> NO MATCH"
                         )
 
-                # Persist team under effective ID only (NOT raw ID when remapped).
-                self._track_to_team[eff_id] = final_team
+                # Persist team under effective ID only
+                if eff_id not in self._track_to_team:
+                    self._add_to_history(eff_id, final_team)
+                self._track_to_team[eff_id] = self._get_stable_team(eff_id)
+                
                 current_effective_ids.add(eff_id)
                 self._last_center_by_effective[eff_id] = center_xy
                 self._log_player_detected(center_xy, eff_id, frame_index)
