@@ -158,8 +158,53 @@ class Settings:
     pitch_corners_image: Optional[tuple[tuple[float, float], ...]] = field(default=None)
     """Four points TL, TR, BR, BL in image space for homography (optional)."""
 
+    field_detection_enabled: bool = False
+    """
+    When True, run the Roboflow ``football-field-detection-f07vi`` keypoint
+    pose model to (a) build a pitch polygon and filter off-field PLAYER/REFEREE
+    detections, and (b) compute an image->pitch homography that powers the
+    existing :class:`FieldMapper`.
+    """
+
+    field_model_path: Optional[Path] = field(default=Path("models/field-keypoints.pt"))
+    """Local Ultralytics ``.pt`` weights for the pitch keypoint model. If the
+    file does not exist and ``field_use_remote_fallback`` is True, the system
+    falls back to the Roboflow Inference HTTP API."""
+
+    field_model_id: str = "football-field-detection-f07vi/15"
+    """Roboflow Universe model id used for the hosted Inference API fallback."""
+
+    field_model_imgsz: int = 1280
+    """Letterbox size for the keypoint model ``predict`` pass."""
+
+    field_model_conf: float = 0.30
+    """Confidence threshold for the keypoint pose ``predict`` pass."""
+
+    field_kp_min_conf: float = 0.50
+    """Per-keypoint visibility threshold; below this a keypoint is treated as
+    not visible and excluded from homography solving."""
+
+    field_recompute_every_n_frames: int = 30
+    """Re-detect pitch keypoints every N frames; between recomputes the cached
+    polygon and homography are reused (broadcast cameras pan slowly relative
+    to per-frame detector cost)."""
+
+    field_mask_expand_ratio: float = 0.05
+    """Expand the pitch polygon by this fraction of its bbox diagonal before
+    point-in-polygon tests, so players right on the touchline aren't dropped."""
+
+    field_use_remote_fallback: bool = True
+    """If True and ``field_model_path`` is missing, fall back to the Roboflow
+    hosted Inference API using ``roboflow_api_key_env``."""
+
+    roboflow_api_key_env: str = "ROBOFLOW_API_KEY"
+    """Environment variable name read for the Roboflow API key (used by the
+    download helper and by the hosted inference fallback)."""
+
     def __post_init__(self) -> None:
         self.input_video = Path(self.input_video)
         self.output_video = Path(self.output_video)
         if self.tracks_log_path is not None:
             self.tracks_log_path = Path(self.tracks_log_path)
+        if self.field_model_path is not None:
+            self.field_model_path = Path(self.field_model_path)

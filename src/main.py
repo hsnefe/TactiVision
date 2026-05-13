@@ -227,7 +227,43 @@ def build_parser() -> argparse.ArgumentParser:
         default=300,
         help="Pixel size (width/height) of the cropped region to search for the ball.",
     )
+    p.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        choices=("normal", "field"),
+        help=(
+            "Pipeline mode: 'normal' for the default pipeline, 'field' to "
+            "additionally run the Roboflow pitch keypoint model for off-field "
+            "filtering and image->pitch homography. If omitted, the user is "
+            "prompted interactively at startup."
+        ),
+    )
     return p
+
+
+def _prompt_pipeline_mode() -> str:
+    """Interactive 1/2 prompt; loops until the user enters 1 or 2.
+
+    Returns ``"normal"`` for ``1`` and ``"field"`` for ``2``. If stdin is not
+    a TTY (e.g. piped runs in CI), returns ``"normal"`` so default behavior
+    is preserved without blocking.
+    """
+    if not sys.stdin.isatty():
+        return "normal"
+    print("Choose pipeline mode:")
+    print("  1) Normal")
+    print("  2) Use pre-trained field detection model")
+    while True:
+        try:
+            choice = input("Enter choice [1/2]: ").strip()
+        except EOFError:
+            return "normal"
+        if choice == "1":
+            return "normal"
+        if choice == "2":
+            return "field"
+        print("Invalid choice. Please enter 1 or 2.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -254,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
     ball_debug = not args.no_ball_debug and not debug_persons
     roi_on = bool(args.roi_recovery) and not args.no_roi_recovery and not debug_persons
     teams_on = not args.no_teams and not debug_persons
+
+    mode = args.mode if args.mode is not None else _prompt_pipeline_mode()
+    field_detection_enabled = mode == "field"
 
     settings = Settings(
         input_video=video_path,
@@ -289,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         ball_roi_recovery=args.ball_roi_recovery,
         ball_roi_conf=args.ball_roi_conf,
         ball_roi_size=args.ball_roi_size,
+        field_detection_enabled=field_detection_enabled,
     )
 
     pipeline = AnalysisPipeline(settings)

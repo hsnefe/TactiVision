@@ -18,6 +18,7 @@ Pipeline (per frame):
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -25,6 +26,14 @@ from sklearn.cluster import KMeans
 
 from VisionEngine.config.settings import Settings
 from VisionEngine.schemas.schema import FrameTracks, ObjectRole, TrackedInstance
+
+
+@dataclass(slots=True)
+class LostTrackRecord:
+    lost_track_id: int
+    team_id: int
+    last_center_xy: tuple[float, float]
+    lost_at_frame_index: int
 
 
 class TeamClassifier:
@@ -35,11 +44,205 @@ class TeamClassifier:
         self._team_model: Optional[KMeans] = None
         self._track_to_team: dict[int, int] = {}
         self._track_to_color: dict[int, np.ndarray] = {}
+        # Persistent map: raw ByteTrack ID → effective (restored) track ID.
+        # Entries are added when a new raw ID is matched to a lost-track record
+        # and removed when that raw ID disappears from tracking.
+        self._raw_to_effective: dict[int, int] = {}
+        self._prev_visible_effective_ids: set[int] = set()
+        self._last_center_by_effective: dict[int, tuple[float, float]] = {}
+        self._lost_track_cache: list[LostTrackRecord] = []
+        # Retention window in frames. The original spec said "5 frames" but in
+        # practice ByteTrack can drop a track for 7-15 frames before assigning
+        # a new id (especially under occlusion). We keep records ~1s long so
+        # the recovery has a chance; combined with the team+distance match
+        # this stays selective enough to avoid wrong reassignments.
+        self._lost_track_ttl_frames = 30
+        self._lost_track_match_distance_px = 150.0
+        # Tight fallback distance: when a new detection is this close to a
+        # lost-track record we recover its ID even if the freshly predicted
+        # jersey team differs (predicted team can be noisy across frames).
+        self._lost_track_close_match_distance_px = 50.0
+        # Verbose recovery diagnostics; prints cache state + match decisions.
+        self._debug_recovery = True
 
     def reset(self) -> None:
         self._team_model = None
         self._track_to_team.clear()
         self._track_to_color.clear()
+        self._raw_to_effective.clear()
+        self._prev_visible_effective_ids.clear()
+        self._last_center_by_effective.clear()
+        self._lost_track_cache.clear()
+
+    @property
+    def track_id_remap(self) -> dict[int, int]:
+        """Return current ``raw_track_id -> effective_track_id`` map for display relabeling."""
+        return dict(self._raw_to_effective)
+
+    def _bbox_center(self, xyxy: tuple[float, float, float, float]) -> tuple[float, float]:
+        x1, y1, x2, y2 = xyxy
+        return ((x1 + x2) * 0.5, (y1 + y2) * 0.5)
+
+    def _predict_team_label(self, player_color: Optional[np.ndarray]) -> Optional[int]:
+        if player_color is None or self._team_model is None:
+            return None
+        try:
+            return int(self._team_model.predict(player_color.reshape(1, -1))[0])
+        except Exception:
+            return None
+
+    def _prune_lost_track_cache(self, frame_index: int) -> None:
+        """Drop entries older than the retention window.
+
+        ``lost_at_frame_index`` is refreshed when a player flickers in/out; the
+        window is measured in **frames since that last refresh**. A small +1
+        buffer avoids dropping the record on the frame right after the nominal
+        ``_lost_track_ttl_frames`` limit (common when matching runs one frame
+        later than expected).
+        """
+        max_age = self._lost_track_ttl_frames + 1
+        self._lost_track_cache = [
+            rec
+            for rec in self._lost_track_cache
+            if (frame_index - rec.lost_at_frame_index) <= max_age
+        ]
+
+    def _log_player_lost(
+        self, player_id: int, center_xy: tuple[float, float], frame_index: int
+    ) -> None:
+        cx, cy = center_xy
+        print(
+            f"Player Lost ID: {player_id} CorX: {cx:.1f} CorY: {cy:.1f} "
+            f"frame={frame_index}"
+        )
+
+    def _log_player_detected(
+        self, center_xy: tuple[float, float], final_id: int, frame_index: int
+    ) -> None:
+        cx, cy = center_xy
+        print(
+            f"Player Detected: CorX: {cx:.1f} CorY: {cy:.1f} ID: {final_id} "
+            f"frame={frame_index}"
+        )
+
+    def _log_recovery_attempt(
+        self,
+        *,
+        frame_index: int,
+        raw_id: int,
+        center_xy: tuple[float, float],
+        predicted_team: int,
+        active_effective_ids: set[int],
+        consumed_lost_ids: set[int],
+    ) -> None:
+        """Print full lost-track cache state for a single recovery attempt."""
+        cx, cy = center_xy
+        print(
+            f"[recovery] frame={frame_index} raw={raw_id} center=({cx:.1f},{cy:.1f}) "
+            f"predicted_team={predicted_team} cache_size={len(self._lost_track_cache)}"
+        )
+        if not self._lost_track_cache:
+            return
+        for rec in self._lost_track_cache:
+            rcx, rcy = rec.last_center_xy
+            dist = float(np.hypot(cx - rcx, cy - rcy))
+            age = frame_index - rec.lost_at_frame_index
+            reasons: list[str] = []
+            if rec.lost_track_id in active_effective_ids:
+                reasons.append("ACTIVE_ID")
+            if rec.lost_track_id in consumed_lost_ids:
+                reasons.append("CONSUMED")
+            if dist > self._lost_track_match_distance_px:
+                reasons.append("DIST>MAX")
+            same_team = rec.team_id == predicted_team
+            tier1 = same_team and dist <= self._lost_track_match_distance_px
+            tier2 = (not same_team) and dist <= self._lost_track_close_match_distance_px
+            tag = "TIER1" if tier1 else ("TIER2" if tier2 else "REJECT")
+            if reasons:
+                tag = f"REJECT({','.join(reasons)})"
+            print(
+                f"[recovery]   rec id={rec.lost_track_id} team={rec.team_id} "
+                f"center=({rcx:.1f},{rcy:.1f}) age={age} dist={dist:.1f} -> {tag}"
+            )
+
+    def _capture_newly_lost_tracks(self, current_effective_ids: set[int], frame_index: int) -> None:
+        """Add or refresh records for players that were visible last frame but are gone now."""
+        newly_lost = self._prev_visible_effective_ids - current_effective_ids
+        for eff_id in sorted(newly_lost):
+            team_id = self._track_to_team.get(eff_id)
+            center = self._last_center_by_effective.get(eff_id)
+            if team_id is None or center is None:
+                continue
+            # If a stale record for this effective id exists (e.g. from a prior
+            # disappearance), refresh it with the latest center & frame so we
+            # match against the most recent known position.
+            existing = next(
+                (r for r in self._lost_track_cache if r.lost_track_id == eff_id),
+                None,
+            )
+            if existing is not None:
+                existing.team_id = team_id
+                existing.last_center_xy = center
+                existing.lost_at_frame_index = frame_index
+            else:
+                self._lost_track_cache.append(
+                    LostTrackRecord(
+                        lost_track_id=eff_id,
+                        team_id=team_id,
+                        last_center_xy=center,
+                        lost_at_frame_index=frame_index,
+                    )
+                )
+            self._log_player_lost(eff_id, center, frame_index)
+
+    def _match_lost_track_id(
+        self,
+        *,
+        team_id: int,
+        center_xy: tuple[float, float],
+        active_effective_ids: set[int],
+        consumed_lost_ids: set[int],
+    ) -> Optional[LostTrackRecord]:
+        """Return the best matching lost-track record (or ``None``).
+
+        Two-tier matching:
+        1. **Same-team within full distance** (``_lost_track_match_distance_px``).
+        2. **Close-distance fallback** (``_lost_track_close_match_distance_px``):
+           when a candidate is very close to a lost record, recover the ID even
+           if the freshly predicted team differs. The record's stored team is
+           used downstream so identity stays stable through prediction noise.
+        """
+        cx, cy = center_xy
+        best_team_match: Optional[LostTrackRecord] = None
+        best_team_dist = float("inf")
+        best_close_match: Optional[LostTrackRecord] = None
+        best_close_dist = float("inf")
+
+        for rec in self._lost_track_cache:
+            if rec.lost_track_id in active_effective_ids:
+                continue
+            if rec.lost_track_id in consumed_lost_ids:
+                continue
+            dx = cx - rec.last_center_xy[0]
+            dy = cy - rec.last_center_xy[1]
+            dist = float(np.hypot(dx, dy))
+            if dist > self._lost_track_match_distance_px:
+                continue
+
+            if rec.team_id == team_id and dist < best_team_dist:
+                best_team_dist = dist
+                best_team_match = rec
+
+            if (
+                dist <= self._lost_track_close_match_distance_px
+                and dist < best_close_dist
+            ):
+                best_close_dist = dist
+                best_close_match = rec
+
+        if best_team_match is not None:
+            return best_team_match
+        return best_close_match
 
     def _player_instances(self, tracks: FrameTracks) -> list[TrackedInstance]:
         out: list[TrackedInstance] = []
@@ -169,31 +372,125 @@ class TeamClassifier:
         return label
 
     def update(self, frame: np.ndarray, tracks: FrameTracks) -> dict[int, int]:
-        """Return stable ``track_id -> team_id`` mapping for tracked players."""
+        """Return stable ``effective_track_id -> team_id`` mapping for tracked players."""
         if not self._settings.team_classification_enabled:
             return {}
 
+        frame_index = int(tracks.frame_index)
+        self._prune_lost_track_cache(frame_index)
         players = self._player_instances(tracks)
+        current_raw_ids: set[int] = {inst.track_id for inst in players}
 
+        # --- Step 1: extract jersey colors for raw IDs not yet in any color store ---
         for inst in players:
-            if inst.track_id in self._track_to_team:
+            raw_id = inst.track_id
+            eff_id = self._raw_to_effective.get(raw_id, raw_id)
+            if eff_id in self._track_to_team:
+                continue
+            if raw_id in self._track_to_color:
                 continue
             color = self.get_player_color(frame, inst)
             if color is None:
                 continue
-            self._track_to_color[inst.track_id] = color
+            self._track_to_color[raw_id] = color
 
-        # Fit global team model once enough player features are collected.
+        # --- Step 2: fit global team model once enough features are ready ---
         if self._team_model is None:
             self.assign_team_color(list(self._track_to_color.values()))
 
-        # Assign only unassigned visible players; previously assigned track ids are kept.
+        # --- Step 3: assign teams; resolve lost-track matches for new players ---
+        current_effective_ids: set[int] = set()
+        consumed_lost_ids: set[int] = set()
+
         if self._team_model is not None:
             for inst in players:
-                if inst.track_id in self._track_to_team:
-                    continue
-                player_color = self._track_to_color.get(inst.track_id)
-                self.get_player_team(inst.track_id, player_color)
+                raw_id = inst.track_id
+                center_xy = self._bbox_center(inst.xyxy)
+                eff_id = self._raw_to_effective.get(raw_id, raw_id)
 
-        # Return known team assignments. Renderer/possession consume visible track ids.
+                if eff_id in self._track_to_team:
+                    # Already assigned — just update position tracking.
+                    current_effective_ids.add(eff_id)
+                    self._last_center_by_effective[eff_id] = center_xy
+                    # Do NOT remove lost-track records here: ByteTrack often
+                    # flickers (one frame with this id, then lost again). Purging
+                    # the cache on every visible frame prevents recovery. Active
+                    # ids are already excluded in _match_lost_track_id.
+                    continue
+
+                # New player (not yet assigned under any effective ID).
+                player_color = self._track_to_color.get(raw_id)
+                predicted_team = self._predict_team_label(player_color)
+                if predicted_team is None:
+                    continue
+
+                # Try to recover a lost-track ID from cache (skip on frame 0).
+                final_team = predicted_team
+                if frame_index > 0:
+                    if self._debug_recovery:
+                        self._log_recovery_attempt(
+                            frame_index=frame_index,
+                            raw_id=raw_id,
+                            center_xy=center_xy,
+                            predicted_team=predicted_team,
+                            active_effective_ids=current_effective_ids,
+                            consumed_lost_ids=consumed_lost_ids,
+                        )
+                    matched_rec = self._match_lost_track_id(
+                        team_id=predicted_team,
+                        center_xy=center_xy,
+                        active_effective_ids=current_effective_ids,
+                        consumed_lost_ids=consumed_lost_ids,
+                    )
+                    if matched_rec is not None:
+                        eff_id = matched_rec.lost_track_id
+                        self._raw_to_effective[raw_id] = eff_id
+                        consumed_lost_ids.add(eff_id)
+                        if self._debug_recovery:
+                            print(
+                                f"[recovery] frame={frame_index} raw={raw_id} "
+                                f"-> MATCHED lost_id={eff_id} team={matched_rec.team_id}"
+                            )
+                        # Carry color over to effective ID so future frames keep it.
+                        if player_color is not None:
+                            self._track_to_color[eff_id] = player_color
+                        # Use the recovered record's team to keep identity stable
+                        # even when the new frame's jersey prediction is noisy.
+                        final_team = matched_rec.team_id
+                    elif self._debug_recovery:
+                        print(
+                            f"[recovery] frame={frame_index} raw={raw_id} -> NO MATCH"
+                        )
+
+                # Persist team under effective ID only (NOT raw ID when remapped).
+                self._track_to_team[eff_id] = final_team
+                current_effective_ids.add(eff_id)
+                self._last_center_by_effective[eff_id] = center_xy
+                self._log_player_detected(center_xy, eff_id, frame_index)
+
+        # Ensure all already-assigned players (team model warming-up path) are
+        # counted in current_effective_ids.
+        for inst in players:
+            raw_id = inst.track_id
+            eff_id = self._raw_to_effective.get(raw_id, raw_id)
+            if eff_id in self._track_to_team:
+                current_effective_ids.add(eff_id)
+                self._last_center_by_effective[eff_id] = self._bbox_center(inst.xyxy)
+
+        # Remove consumed lost records so they cannot be reused.
+        if consumed_lost_ids:
+            self._lost_track_cache = [
+                rec for rec in self._lost_track_cache if rec.lost_track_id not in consumed_lost_ids
+            ]
+
+        # Capture tracks that disappeared this frame (keyed by effective ID).
+        self._capture_newly_lost_tracks(current_effective_ids, frame_index)
+        self._prev_visible_effective_ids = set(current_effective_ids)
+
+        # Expire remap entries whose raw ID is no longer tracked.
+        for raw_id in list(self._raw_to_effective.keys()):
+            if raw_id not in current_raw_ids:
+                del self._raw_to_effective[raw_id]
+
+        # Return effective_id -> team mapping. Renderer/possession consume this.
         return dict(self._track_to_team)
