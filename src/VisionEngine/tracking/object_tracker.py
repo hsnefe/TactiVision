@@ -157,7 +157,12 @@ class ObjectTracker:
         last_known_bbox: tuple[float, float, float, float]
     ) -> tuple[tuple[float, float, float, float], float] | None:
         """Performs ROI search around the last position if the ball is not found in general search."""
-        print(f"BİLGİ: Top için ROI taraması tetiklendi! Conf: {getattr(self._settings, 'ball_roi_conf', 0.15)}")
+        if getattr(self._settings, "ball_roi_scan_debug", False):
+            print(
+                f"BİLGİ: Top için ROI taraması tetiklendi! Conf: "
+                f"{getattr(self._settings, 'ball_roi_conf', 0.15)}",
+                flush=True,
+            )
 
         aux_model = self._aux_model or self._model
         if not self._ball_class_ids or aux_model is None:

@@ -48,10 +48,13 @@ class PossessionEstimator:
         """
         Compute possession for the current frame using semantic roles.
 
-        Uses :class:`~VisionEngine.schemas.schema.ObjectRole` ``BALL`` and ``PLAYER``.
+        Uses ``BALL`` for the ball hypothesis and possesses among ``PLAYER``
+        tracks only (excludes ``REFEREE``, ``OTHER``). Goalkeepers modeled as ``PLAYER``.
         """
         balls = [i for i in tracks.instances if i.role is ObjectRole.BALL]
-        players = [i for i in tracks.instances if i.role is ObjectRole.PLAYER]
+        # Only players can possess; exclude referee (and implicitly goalkeepers would use PLAYER).
+        _poss_roles = frozenset({ObjectRole.PLAYER})
+        candidates = [i for i in tracks.instances if i.role in _poss_roles]
 
         if not balls:
             return PossessionState()
@@ -64,7 +67,7 @@ class PossessionEstimator:
         best_tid: Optional[int] = None
         best_d2 = float(self._settings.possession_proximity_px) ** 2
 
-        for pl in players:
+        for pl in candidates:
             if pl.track_id < 0:
                 continue
             px, py = _bbox_center(pl.xyxy)

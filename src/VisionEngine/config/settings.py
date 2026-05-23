@@ -16,6 +16,9 @@ class Settings:
 
     input_video: Path
     output_video: Path
+    mode: str = "normal"
+    """Pipeline mode: ``normal`` (broadcast tracking pipeline) or ``field``."""
+
     model_path: str = "yolo11n.pt"
     """Default YOLO11 nano model path."""
 
@@ -100,6 +103,249 @@ class Settings:
     tracks_log_path: Optional[Path] = None
     """If set, append per-frame tracking records as JSON Lines."""
 
+    pass_detection_enabled: bool = False
+    """When True, run the finite-state pass detector on possession + track teams."""
+
+    pass_events_jsonl_path: Optional[Path] = None
+    """Destination JSONL for :class:`~VisionEngine.EventAnalytics.pass_detector.PassEvent` rows."""
+
+    pass_min_possession_frames: int = 3
+    pass_min_pass_frames: int = 2
+    pass_max_pass_frames: int = 90
+    pass_cooldown_frames: int = 10
+    pass_same_player_grace_frames: int = 4
+    pass_emit_interceptions: bool = True
+    pass_require_same_team_for_completed: bool = True
+
+    pass_team_stability_window: int = 10
+    """Per-track team-id deque length inside :class:`~VisionEngine.EventAnalytics.pass_detector.PassDetector`."""
+
+    pass_team_min_stable_count: int = 6
+    """Minimum agreeing labels needed to treat ``from_team`` / ``to_team`` as temporally stable."""
+
+    pass_unstable_team_as_unknown: bool = True
+    """Prefer ``unknown_pass`` over ``intercepted_pass`` when team labels jitter on either player."""
+
+    pass_kickoff_bootstrap_guard_enabled: bool = True
+    """Output-only fix: first kickoff-era ``intercepted_pass`` may have unreliable passer IDs."""
+
+    pass_kickoff_bootstrap_guard_max_frame: int = 70
+    """Only applies the kickoff guard when ``start_frame <=`` this value."""
+
+    pass_owner_min_stable_frames: int = 5
+    """Consecutive possession frames defining a controlled ball owner."""
+
+    pass_owner_switch_min_frames: int = 5
+    """Frames a new possession id must persist (after transient window) before owner switch."""
+
+    pass_transient_contact_max_frames: int = 4
+    """Possession glimpses shorter than this are ignored for ownership / pass branching."""
+
+    pass_release_min_frames_away: int = 3
+    """Frames the ball must stay away from the owner's foot-point before ``release``."""
+
+    pass_release_min_distance_px: float = 25.0
+    """Distance (px) ball -> owner foot exceeding this counts as ``away``."""
+
+    pass_release_min_ball_displacement_px: float = 20.0
+    """Min ball displacement vs first ``away`` frame before arming pass candidate."""
+
+    pass_receiver_confirm_frames: int = 5
+    """Frames a receiver must stay as foot-radius candidate (with gap tolerance)."""
+
+    pass_receiver_max_gap_frames: int = 2
+    """Missed-foot-radius frames before receiver streak resets."""
+
+    pass_receiver_control_radius_px: float = 70.0
+    """Foot-point to ball center distance for inbound receiver hypothesis."""
+
+    pass_candidate_timeout_frames: int = 90
+    """In-flight candidate horizon without emission (discard, no forced pass)."""
+
+    pass_post_receive_settle_frames: int = 12
+    """After a completed pass: block the receiver's *normal* release path for N frames."""
+
+    pass_post_receive_require_reconfirm: bool = True
+    """When False: skip settle blocking (immediate normal release resumes)."""
+
+    pass_allow_one_touch_release: bool = True
+    """Allow a tightened one-touch pass during the settle block window."""
+
+    pass_one_touch_window_frames: int = 8
+    """One-touch path only while frame <= pass_end_frame + N."""
+
+    pass_one_touch_min_away_frames: int = 3
+    """Ball must leave receiver's tight control radius for N consecutive frames."""
+
+    pass_one_touch_min_outgoing_displacement_px: float = 30.0
+    """Min displacement from recorded contact anchoring."""
+
+    pass_one_touch_receiver_confirm_frames: int = 4
+    """Inbound receiver persisted under tight radius before emitting one-touch pass."""
+
+    pass_one_touch_control_radius_px: float = 75.0
+    """Receiver foot-ball proximity tolerance for establishing contact vs receiver."""
+
+    pass_source_reliability_enabled: bool = True
+    """Verify passer foot-ball proximity near ``release_frame`` before emitting."""
+
+    pass_source_release_lookback_frames: int = 8
+    """Frames before ``release_frame`` included when sampling passer-ball distance."""
+
+    pass_source_max_release_distance_px: float = 115.0
+    """Max passer-foot to ball-center distance (px) for a ``reliable`` source."""
+
+    pass_source_unknown_if_unreliable: bool = True
+    """Emit ``unknown_pass`` with preserved ``original_from_player_id`` when unreliable."""
+
+    pass_touch_fallback_enabled: bool = True
+    """Raw footpoint touch-to-touch pass recovery when the main FSM misses."""
+
+    pass_touch_history_frames: int = 80
+    """Rolling frames kept for touch episode construction."""
+
+    pass_touch_source_lookback_frames: int = 14
+    """Reserved for temporal filtering around source touch episodes."""
+
+    pass_touch_receiver_lookahead_frames: int = 12
+    """Defer supplemental emit until this many frames after receiver touch ends."""
+
+    pass_touch_contact_radius_px: float = 90.0
+    """Footpoint-to-ball distance for a nominal touch frame."""
+
+    pass_touch_strong_contact_radius_px: float = 65.0
+    """Strong touch threshold (footpoint–ball)."""
+
+    pass_touch_min_source_contact_frames: int = 2
+
+    pass_touch_min_receiver_contact_frames: int = 3
+
+    pass_touch_min_displacement_px: float = 25.0
+
+    pass_touch_max_duration_frames: int = 50
+    """Max frames between source episode end and receiver episode start."""
+
+    pass_touch_min_avg_speed_px_per_frame: float = 1.0
+
+    pass_touch_duplicate_window_frames: int = 30
+
+    pass_touch_confidence_cap: float = 0.78
+
+    pass_touch_ignore_bbox_only_contact: bool = True
+
+    pass_touch_use_footpoint_distance: bool = True
+
+    pass_source_reliability_primary_fsm_grace_enabled: bool = True
+    pass_source_reliability_lookback_frames: int = 16
+    pass_source_reliability_lookahead_frames: int = 3
+    pass_source_reliability_dynamic_radius_enabled: bool = True
+    pass_source_reliability_min_radius_px: float = 80.0
+    pass_source_reliability_bbox_height_ratio: float = 0.70
+    pass_source_reliability_keep_primary_fsm_source: bool = True
+
+    pass_touch_dynamic_radius_enabled: bool = True
+    pass_touch_min_radius_px: float = 35.0
+    pass_touch_max_radius_px: float = 95.0
+    pass_touch_bbox_height_ratio: float = 0.28
+    pass_touch_lower_body_fraction: float = 0.45
+    pass_touch_require_lower_body_or_footpoint: bool = True
+    pass_touch_bbox_overlap_only_penalty: float = 0.50
+
+    pass_dribble_guard_enabled: bool = True
+    pass_dribble_guard_window_frames: int = 12
+    pass_dribble_guard_return_to_same_player_frames: int = 8
+    pass_dribble_guard_max_receiver_contact_frames: int = 2
+    pass_dribble_guard_min_receiver_distance_gain_px: float = 30.0
+    pass_dribble_guard_skip_if_source_retains_control: bool = True
+
+    pass_receiver_candidate_score_enabled: bool = True
+    pass_receiver_bbox_only_max_score: float = 0.4
+    pass_receiver_bbox_only_cannot_win: bool = True
+    pass_receiver_min_score: float = 1.0
+
+    pass_event_id_alias_enabled: bool = True
+    pass_event_id_alias_max_gap_frames: int = 20
+    pass_event_id_alias_max_center_distance_px: float = 65.0
+    pass_event_id_alias_require_same_team: bool = True
+    pass_event_id_alias_require_similar_bbox: bool = True
+    pass_event_id_alias_bbox_height_ratio_tol: float = 0.35
+    pass_event_id_alias_apply_to_output: bool = False
+    pass_event_id_alias_apply_to_decision: bool = False
+
+    pass_source_reliability_keep_visible_primary_source: bool = True
+    pass_source_reliability_primary_keep_lookback_frames: int = 20
+    pass_source_reliability_primary_keep_lookahead_frames: int = 5
+    pass_source_reliability_primary_keep_min_visible_frames: int = 2
+    pass_source_reliability_primary_keep_radius_px: float = 190.0
+    pass_source_reliability_primary_keep_nearest_rank: int = 3
+
+    pass_bbox_only_intermediate_guard_enabled: bool = True
+    pass_bbox_only_max_contact_frames: int = 2
+    pass_bbox_only_min_footpoint_distance_px: float = 120.0
+    pass_bbox_only_chain_window_frames: int = 18
+    pass_bbox_only_require_lower_body_touch: bool = True
+
+    pass_valid_touch_gate_enabled: bool = True
+    pass_valid_touch_history_frames: int = 80
+    pass_valid_touch_max_gap_frames: int = 4
+    pass_valid_touch_min_frames: int = 2
+    pass_valid_touch_min_radius_px: float = 35.0
+    pass_valid_touch_max_radius_px: float = 105.0
+    pass_valid_touch_bbox_height_ratio: float = 0.32
+    pass_valid_touch_lower_body_fraction: float = 0.45
+    pass_valid_touch_bbox_only_footpoint_min_px: float = 125.0
+
+    pass_source_recover_from_valid_touch_enabled: bool = True
+    pass_source_recover_lookback_frames: int = 28
+    pass_source_recover_max_distance_px: float = 170.0
+    pass_source_recover_require_same_primary_context: bool = False
+
+    pass_receiver_retarget_after_bbox_only_enabled: bool = True
+    pass_receiver_retarget_lookahead_frames: int = 18
+    pass_receiver_retarget_max_distance_px: float = 180.0
+
+    pass_short_valid_touch_fallback_enabled: bool = False
+    pass_short_valid_touch_max_duration_frames: int = 32
+    pass_short_valid_touch_min_displacement_px: float = 22.0
+    pass_short_valid_touch_duplicate_window_frames: int = 24
+    pass_short_valid_touch_confidence_cap: float = 0.76
+
+    pass_strict_bbox_only_classification_enabled: bool = True
+
+    pass_none_source_recovery_enabled: bool = True
+    pass_none_source_recovery_lookback_frames: int = 36
+    pass_none_source_recovery_lookahead_frames: int = 4
+    pass_none_source_recovery_min_visible_frames: int = 2
+    pass_none_source_recovery_max_distance_px: float = 230.0
+    pass_none_source_recovery_use_original_from: bool = True
+    pass_none_source_recovery_use_last_valid_touch: bool = True
+    pass_none_source_recovery_skip_kickoff_guard: bool = True
+
+    pass_invalid_intermediate_memory_enabled: bool = True
+    pass_invalid_intermediate_ttl_frames: int = 40
+    pass_invalid_intermediate_min_footpoint_distance_px: float = 130.0
+    pass_invalid_intermediate_max_valid_touch_frames: int = 1
+    pass_invalid_intermediate_require_no_lower_body_touch: bool = True
+
+    pass_chain_retarget_enabled: bool = True
+    pass_chain_retarget_window_frames: int = 36
+    pass_chain_retarget_require_valid_receiver_touch: bool = True
+    pass_chain_retarget_max_receiver_distance_px: float = 220.0
+
+    pass_short_valid_touch_fallback_recall_enabled: bool = False
+    pass_short_valid_touch_fallback_max_duration_frames: int = 42
+    pass_short_valid_touch_fallback_min_displacement_px: float = 18.0
+    pass_short_valid_touch_fallback_duplicate_window_frames: int = 30
+    pass_short_valid_touch_fallback_confidence_cap: float = 0.74
+
+    pass_debug_throttle_duplicate_lines_frames: int = 30
+
+    pass_debug: bool = False
+    """Print pass-detector diagnostics and emitted pass lines to the terminal."""
+
+    ball_roi_scan_debug: bool = False
+    """Verbose terminal notices when ball ROI recovery scan runs."""
+
     debug_tracking: bool = False
     """Log extra inference / parse diagnostics."""
 
@@ -163,3 +409,5 @@ class Settings:
         self.output_video = Path(self.output_video)
         if self.tracks_log_path is not None:
             self.tracks_log_path = Path(self.tracks_log_path)
+        if self.pass_events_jsonl_path is not None:
+            self.pass_events_jsonl_path = Path(self.pass_events_jsonl_path)
