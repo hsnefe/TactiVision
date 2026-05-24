@@ -448,6 +448,19 @@ class _ValidTouchOpenEpisode:
 
 
 @dataclass
+class _PendingReturnPass:
+    from_player_id: int
+    to_player_id: int
+    from_team_id: Optional[int]
+    to_team_id: Optional[int]
+    start_frame: int
+    release_anchor_xy: tuple[float, float]
+    expires_frame: int
+    streak: int = 0
+    first_candidate_frame: Optional[int] = None
+
+
+@dataclass
 class _FlightContactEpisode:
     player_id: int
     team_id: Optional[int]
@@ -744,6 +757,7 @@ class PassDetector:
         self._touch_finished: deque[_TouchEpisode] = deque(maxlen=96)
         self._pass_emission_log: deque[PassEvent] = deque(maxlen=512)
         self._pending_weak_chain_event: Optional[PassEvent] = None
+        self._pending_return_pass: Optional[_PendingReturnPass] = None
 
         self._last_bbox_heights: dict[int, float] = {}
         self._last_bbox_xyxy: dict[int, tuple[float, float, float, float]] = {}
@@ -1594,6 +1608,192 @@ class PassDetector:
 
         return False, md_out, visible_frames, best_rank
 
+    def _same_team_retarget_after_source_recovery(
+        self,
+        *,
+        event: PassEvent,
+        cand: _FlightCandidate,
+        receiver_id: int,
+        frame_index: int,
+        tracks: Optional["FrameTracks"],
+        ball_xy: Optional[tuple[float, float]],
+        track_to_team: dict[int, int],
+    ) -> Optional[int]:
+        if tracks is None or ball_xy is None:
+            return None
+        if event.source_recovery_method != "recent_valid_touch_source_replace":
+            return None
+        if event.event_type != "intercepted_pass":
+            return None
+        if event.from_player_id is None or event.from_team_id is None:
+            return None
+        if event.to_team_id is None or event.from_team_id == event.to_team_id:
+            return None
+
+        cfg = self._config
+        from VisionEngine.schemas.schema import ObjectRole
+
+        search_r = float(cfg.pass_receiver_control_radius_px) * 1.45 + 40.0
+        best_tid: Optional[int] = None
+        best_score = float("-inf")
+        best_d = float("inf")
+        receiver_d: Optional[float] = None
+
+        for inst in tracks.instances:
+            if inst.role is not ObjectRole.PLAYER:
+                continue
+            tid = inst.track_id
+            if tid == receiver_id:
+                bbox = tuple(float(x) for x in inst.xyxy)
+                receiver_d = _dist_px(foot_xy(bbox), ball_xy)
+                continue
+            if tid < 0 or tid in (event.from_player_id, receiver_id):
+                continue
+            if track_to_team.get(tid) != event.from_team_id:
+                continue
+            if (
+                cfg.pass_invalid_intermediate_memory_enabled
+                and self._invalid_intermediate_active(tid, frame_index)
+            ):
+                continue
+            bbox = tuple(float(x) for x in inst.xyxy)
+            ft = foot_xy(bbox)
+            d_near = _dist_px(ft, ball_xy)
+            if d_near > search_r:
+                continue
+            d_foot, lower_ok, valid_ctrl, bbox_only_flag = classify_touch_features(
+                cfg, bbox, ball_xy
+            )
+            if bbox_only_flag and not (lower_ok or valid_ctrl):
+                continue
+            tm = track_to_team.get(tid)
+            stab = tm is None or self._team_label_stable_for_track(tid, tm)
+            sc = self._score_receiver_candidate_one_frame(
+                track_id=tid,
+                bbox=bbox,
+                ball_xy=ball_xy,
+                exclude=event.from_player_id,
+                release_anchor=cand.ball_anchor_xy,
+                ft=ft,
+                d_foot=d_foot,
+                lower_body_valid=lower_ok,
+                bbox_overlap_only=bbox_only_flag,
+                team_id=tm,
+                track_to_team=track_to_team,
+                team_stable=stab,
+            )
+            if sc > best_score:
+                best_tid = tid
+                best_score = sc
+                best_d = d_near
+
+        if best_tid is None or best_score < 0.35:
+            return None
+        tight_receiver_d = max(40.0, cfg.pass_receiver_control_radius_px * 0.65)
+        if (
+            receiver_d is not None
+            and receiver_d <= tight_receiver_d
+            and best_d + 15.0 >= receiver_d
+        ):
+            return None
+
+        old_receiver = receiver_id
+        event.to_player_id = best_tid
+        event.to_team_id = event.from_team_id
+        event.raw_to_team_id = event.from_team_id
+        event.receiver_bbox_intermediate_raw = old_receiver
+        event.receiver_selection_reason = "same_team_retarget_after_source_recover"
+        event.receiver_score = round(best_score, 6)
+        event.receiver_contact_type = self._receiver_contact_label_for_emit(
+            best_tid, cand, frame_index
+        )
+        event.bbox_only_guard_status = "source_recovery_same_team_retargeted"
+        event.bbox_guard_checked = True
+        event.bbox_guard_result = "retargeted"
+        event.event_type = self._classify(
+            event.from_team_id,
+            event.to_team_id,
+            cfg.require_same_team_for_completed,
+            cfg.emit_interceptions,
+        )
+        event.confidence = min(event.confidence, 0.82)
+        reason = f"source_recovered_same_team_receiver:{old_receiver}->{best_tid}"
+        event.debug_reason = (
+            reason if event.debug_reason is None else f"{event.debug_reason};{reason}"
+        )
+        self._dbg_gate(
+            f"source_recover_recv_rt:{event.from_player_id}:{old_receiver}->{best_tid}",
+            frame_index,
+            "[PASS-RECEIVER-RETARGET] "
+            f"{event.from_player_id}->{old_receiver} retargeted_to={best_tid} "
+            f"reason=source_recovered_same_team score={best_score:.2f} d={best_d:.1f}",
+        )
+        return best_tid
+
+    def _short_interception_duel_should_suppress(self, event: PassEvent) -> bool:
+        cfg = self._config
+        if event.event_type != "intercepted_pass":
+            return False
+        if event.from_team_id is None or event.to_team_id is None:
+            return False
+        if event.from_team_id == event.to_team_id:
+            return False
+        if event.start_frame <= cfg.pass_kickoff_bootstrap_guard_max_frame:
+            return False
+        if event.duration_frames > 8:
+            return False
+        disp = event.ball_displacement_px
+        if disp is None or disp > 42.0:
+            return False
+        if event.receiver_contact_type not in ("lower_body", "lower_body_sustained"):
+            return False
+        return True
+
+    def _recent_source_valid_touch_for_keep(
+        self, from_tid: int, release_frame: int
+    ) -> Optional[_ValidTouchEpisode]:
+        cfg = self._config
+        lookback = max(
+            cfg.pass_source_recover_lookback_frames,
+            cfg.pass_touch_history_frames,
+        )
+        lb = max(0, release_frame - lookback)
+        best: Optional[_ValidTouchEpisode] = None
+
+        def maybe_keep(ep: _ValidTouchEpisode) -> None:
+            nonlocal best
+            if ep.player_id != from_tid:
+                return
+            if ep.contact_frames < cfg.pass_valid_touch_min_frames:
+                return
+            if ep.end_frame >= release_frame or ep.end_frame < lb:
+                return
+            if best is None or (ep.end_frame, ep.contact_frames) > (
+                best.end_frame,
+                best.contact_frames,
+            ):
+                best = ep
+
+        for ep in self._valid_touch_finished:
+            maybe_keep(ep)
+
+        eo = self._valid_touch_open.get(from_tid)
+        if eo is not None:
+            maybe_keep(
+                _ValidTouchEpisode(
+                    player_id=from_tid,
+                    team_id=eo.team_id_snap,
+                    start_frame=eo.start_frame,
+                    end_frame=eo.end_frame,
+                    contact_frames=eo.contact_frames,
+                    min_distance_to_ball=eo.min_d,
+                    first_ball_xy=eo.first_ball_xy,
+                    last_ball_xy=eo.last_ball_xy,
+                )
+            )
+
+        return best
+
     def _apply_pass_source_reliability_touch(
         self, event: PassEvent, anchor_frame: int, from_tid: int
     ) -> PassEvent:
@@ -1756,6 +1956,40 @@ class PassDetector:
             )
         ):
             return event
+
+        if (
+            event.pass_fsm_state == "completed"
+            and not event.one_touch
+            and reason == "source_far_from_release"
+        ):
+            last_ev = self._pass_emission_log[-1] if self._pass_emission_log else None
+            from_recovered_interception = (
+                last_ev is not None
+                and last_ev.to_player_id == tid
+                and last_ev.event_type == "intercepted_pass"
+                and last_ev.source_recovery_method == "recent_valid_touch_source_replace"
+            )
+            keep_ep = None
+            if not from_recovered_interception:
+                keep_ep = self._recent_source_valid_touch_for_keep(
+                    tid, cand.release_frame
+                )
+            if keep_ep is not None:
+                event.source_reliability = "reliable"
+                event.source_reliability_reason = (
+                    "primary_owner_recent_valid_touch_kept"
+                )
+                event.confidence = min(event.confidence, 0.88)
+                if cfg.pass_debug:
+                    self._dbg_gate(
+                        f"source_keep_recent_vt:{tid}:{cand.release_frame}",
+                        cand.release_frame,
+                        "[PASS-SOURCE] keep source="
+                        f"{tid} reason=primary_owner_recent_valid_touch "
+                        f"touch_end={keep_ep.end_frame} "
+                        f"contact_frames={keep_ep.contact_frames}",
+                    )
+                return event
 
         mark_reason = reason or rel or "source_unverified"
         if cfg.pass_debug:
@@ -2101,6 +2335,341 @@ class PassDetector:
             self._last_owner_switch = None
         return ev
 
+    def _make_direct_fallback_event(
+        self,
+        *,
+        from_player_id: int,
+        to_player_id: int,
+        from_team_id: Optional[int],
+        to_team_id: Optional[int],
+        start_frame: int,
+        end_frame: int,
+        timestamp_sec: Optional[float],
+        ball_start_xy: Optional[tuple[float, float]],
+        ball_end_xy: Optional[tuple[float, float]],
+        confidence: float,
+        pass_fsm_state: str,
+        receiver_selection_reason: str,
+        receiver_contact_type: str,
+        debug_reason: str,
+        possession: PossessionState,
+        track_to_team: dict[int, int],
+        tracks: Optional["FrameTracks"],
+        emit_path_base: str,
+        receiver_confirm_start_frame: Optional[int] = None,
+        receiver_confirm_frames: Optional[int] = None,
+    ) -> PassEvent:
+        cfg = self._config
+        evt_type = self._classify(
+            from_team_id,
+            to_team_id,
+            cfg.require_same_team_for_completed,
+            cfg.emit_interceptions,
+        )
+        team_stable = (
+            (from_team_id is None or self._team_label_stable_for_track(from_player_id, from_team_id))
+            and (to_team_id is None or self._team_label_stable_for_track(to_player_id, to_team_id))
+        )
+        disp = (
+            _dist_px(ball_start_xy, ball_end_xy)
+            if ball_start_xy is not None and ball_end_xy is not None
+            else None
+        )
+        event = PassEvent(
+            event_id=self._next_event_id,
+            event_type=evt_type,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            start_time_sec=None,
+            end_time_sec=timestamp_sec,
+            from_player_id=from_player_id,
+            to_player_id=to_player_id,
+            from_team_id=from_team_id,
+            to_team_id=to_team_id,
+            duration_frames=max(1, end_frame - start_frame + 1),
+            duration_sec=None,
+            confidence=confidence,
+            ball_start_xy=ball_start_xy,
+            ball_end_xy=ball_end_xy,
+            raw_from_team_id=from_team_id,
+            raw_to_team_id=to_team_id,
+            team_stable=team_stable,
+            debug_reason=debug_reason,
+            release_frame=start_frame,
+            receiver_confirm_start_frame=(
+                receiver_confirm_start_frame
+                if receiver_confirm_start_frame is not None
+                else end_frame
+            ),
+            receiver_confirm_frames=receiver_confirm_frames,
+            ball_displacement_px=disp,
+            pass_fsm_state=pass_fsm_state,
+            source=emit_path_base,
+            source_reliability="recovered",
+            source_reliability_reason=debug_reason,
+            receiver_selection_reason=receiver_selection_reason,
+            dribble_guard_status="passed_guard",
+            receiver_contact_type=receiver_contact_type,
+            bbox_only_guard_status="direct_fallback",
+            emit_path=emit_path_base,
+            receiver_contact_decision=receiver_selection_reason,
+        )
+        self._next_event_id += 1
+        self._apply_pass_event_aliases(event, end_frame, track_to_team=track_to_team)
+        bx = ball_end_xy
+        if bx is None and possession.ball_xy is not None:
+            bx = (float(possession.ball_xy[0]), float(possession.ball_xy[1]))
+        self._attach_pass_decision_telemetry(
+            event,
+            tracks=tracks,
+            ball_xy=bx,
+            track_to_team=track_to_team,
+            frame_index=end_frame,
+            emit_path_base=emit_path_base,
+            flight_start_frame=start_frame,
+            flight_end_frame=end_frame,
+            release_anchor_xy=ball_start_xy,
+        )
+        self._remember_pass_emission(event)
+        return event
+
+    def _try_emit_owner_switch_proximity_fallback(
+        self,
+        *,
+        prev_owner: int,
+        new_owner: int,
+        frame_index: int,
+        timestamp_sec: Optional[float],
+        possession: PossessionState,
+        track_to_team: dict[int, int],
+        tracks: Optional["FrameTracks"],
+    ) -> Optional[PassEvent]:
+        if tracks is None or possession.ball_xy is None or self._away_anchor is None:
+            return None
+        last_ev = self._pass_emission_log[-1] if self._pass_emission_log else None
+        if (
+            last_ev is None
+            or last_ev.to_player_id != prev_owner
+            or last_ev.from_player_id is None
+            or prev_owner != self._last_receiver_id
+        ):
+            return None
+        if last_ev.pass_fsm_state != "completed" or last_ev.one_touch:
+            return None
+        last_contact = (last_ev.receiver_contact_type or "").lower()
+        if last_contact not in ("unknown", "bbox_overlap_skim") and "bbox" not in last_contact:
+            return None
+        if frame_index - last_ev.end_frame > 70:
+            return None
+
+        cfg = self._config
+        from VisionEngine.schemas.schema import ObjectRole
+
+        ball_xy = (float(possession.ball_xy[0]), float(possession.ball_xy[1]))
+        new_owner_d: Optional[float] = None
+        best_tid: Optional[int] = None
+        best_d = float("inf")
+        best_score = float("-inf")
+        search_r = float(cfg.pass_receiver_control_radius_px) * 1.45 + 40.0
+
+        for inst in tracks.instances:
+            if inst.role is not ObjectRole.PLAYER or inst.track_id < 0:
+                continue
+            tid = inst.track_id
+            bbox = tuple(float(x) for x in inst.xyxy)
+            d = _dist_px(foot_xy(bbox), ball_xy)
+            if tid == new_owner:
+                new_owner_d = d
+            if tid in (prev_owner, new_owner):
+                continue
+            if d > search_r:
+                continue
+            tm = track_to_team.get(tid)
+            prev_team = track_to_team.get(prev_owner)
+            if prev_team is not None and tm is not None and tm != prev_team:
+                continue
+            d_foot, lower_ok, valid_ctrl, bbox_only_flag = classify_touch_features(
+                cfg, bbox, ball_xy
+            )
+            if bbox_only_flag and not (lower_ok or valid_ctrl):
+                continue
+            stab = tm is None or self._team_label_stable_for_track(tid, tm)
+            sc = self._score_receiver_candidate_one_frame(
+                track_id=tid,
+                bbox=bbox,
+                ball_xy=ball_xy,
+                exclude=prev_owner,
+                release_anchor=self._away_anchor,
+                ft=foot_xy(bbox),
+                d_foot=d_foot,
+                lower_body_valid=lower_ok,
+                bbox_overlap_only=bbox_only_flag,
+                team_id=tm,
+                track_to_team=track_to_team,
+                team_stable=stab,
+            )
+            if d < best_d:
+                best_tid = tid
+                best_d = d
+                best_score = sc
+
+        if best_tid is None:
+            return None
+        if best_d > 60.0:
+            return None
+        if best_score < 0.35:
+            return None
+        if new_owner_d is not None and best_d + 20.0 >= new_owner_d:
+            return None
+
+        from_team = track_to_team.get(prev_owner)
+        to_team = track_to_team.get(best_tid)
+        if to_team is None:
+            to_team = from_team
+        start_frame = max(0, frame_index - max(1, self._away_run) + 1)
+        event = self._make_direct_fallback_event(
+            from_player_id=prev_owner,
+            to_player_id=best_tid,
+            from_team_id=from_team,
+            to_team_id=to_team,
+            start_frame=start_frame,
+            end_frame=frame_index,
+            timestamp_sec=timestamp_sec,
+            ball_start_xy=tuple(self._away_anchor),
+            ball_end_xy=ball_xy,
+            confidence=0.76,
+            pass_fsm_state="owner_switch_proximity_fallback",
+            receiver_selection_reason="owner_switch_proximity_receiver",
+            receiver_contact_type="proximity_receiver",
+            debug_reason="owner_switch_proximity_receiver",
+            possession=possession,
+            track_to_team=track_to_team,
+            tracks=tracks,
+            emit_path_base="owner_switch_proximity_fallback",
+            receiver_confirm_start_frame=frame_index,
+            receiver_confirm_frames=1,
+        )
+        self._dbg_gate(
+            f"owner_switch_prox:{prev_owner}->{best_tid}:{frame_index}",
+            frame_index,
+            "[PASS-FSM] owner_switch_proximity_fallback "
+            f"{prev_owner}->{best_tid} over_owner={new_owner} "
+            f"d={best_d:.1f} score={best_score:.2f}",
+        )
+
+        if (
+            last_ev.from_player_id is not None
+            and last_ev.from_player_id != best_tid
+            and last_ev.from_player_id != prev_owner
+        ):
+            self._pending_return_pass = _PendingReturnPass(
+                from_player_id=best_tid,
+                to_player_id=last_ev.from_player_id,
+                from_team_id=to_team,
+                to_team_id=last_ev.from_team_id,
+                start_frame=frame_index + 1,
+                release_anchor_xy=ball_xy,
+                expires_frame=frame_index + 70,
+            )
+        self._away_run = 0
+        self._away_anchor = None
+        return event
+
+    def _try_emit_pending_return_pass(
+        self,
+        *,
+        frame_index: int,
+        timestamp_sec: Optional[float],
+        possession: PossessionState,
+        track_to_team: dict[int, int],
+        tracks: Optional["FrameTracks"],
+    ) -> Optional[PassEvent]:
+        pending = self._pending_return_pass
+        if pending is None:
+            return None
+        if frame_index > pending.expires_frame:
+            self._pending_return_pass = None
+            return None
+        if tracks is None or possession.ball_xy is None:
+            return None
+
+        from VisionEngine.schemas.schema import ObjectRole
+
+        ball_xy = (float(possession.ball_xy[0]), float(possession.ball_xy[1]))
+        target_bbox: Optional[tuple[float, float, float, float]] = None
+        for inst in tracks.instances:
+            if (
+                inst.role is ObjectRole.PLAYER
+                and inst.track_id == pending.to_player_id
+            ):
+                target_bbox = tuple(float(x) for x in inst.xyxy)
+                break
+        if target_bbox is None:
+            pending.streak = 0
+            pending.first_candidate_frame = None
+            return None
+
+        target_foot = foot_xy(target_bbox)
+        target_d = _dist_px(target_foot, ball_xy)
+        disp = _dist_px(pending.release_anchor_xy, ball_xy)
+        v1 = (
+            ball_xy[0] - pending.release_anchor_xy[0],
+            ball_xy[1] - pending.release_anchor_xy[1],
+        )
+        v2 = (
+            target_foot[0] - pending.release_anchor_xy[0],
+            target_foot[1] - pending.release_anchor_xy[1],
+        )
+        n1 = math.hypot(v1[0], v1[1])
+        n2 = math.hypot(v2[0], v2[1])
+        align = 0.0
+        if n1 > 1e-3 and n2 > 1e-3:
+            align = (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)
+
+        if target_d <= 110.0 and disp >= 80.0 and align >= 0.75:
+            pending.streak += 1
+            if pending.first_candidate_frame is None:
+                pending.first_candidate_frame = frame_index
+        else:
+            pending.streak = 0
+            pending.first_candidate_frame = None
+            return None
+
+        if pending.streak < 3:
+            return None
+
+        event = self._make_direct_fallback_event(
+            from_player_id=pending.from_player_id,
+            to_player_id=pending.to_player_id,
+            from_team_id=pending.from_team_id,
+            to_team_id=pending.to_team_id,
+            start_frame=pending.start_frame,
+            end_frame=frame_index,
+            timestamp_sec=timestamp_sec,
+            ball_start_xy=pending.release_anchor_xy,
+            ball_end_xy=ball_xy,
+            confidence=0.74,
+            pass_fsm_state="pending_return_fallback",
+            receiver_selection_reason="give_and_go_return_target",
+            receiver_contact_type="proximity_return",
+            debug_reason="pending_return_pass",
+            possession=possession,
+            track_to_team=track_to_team,
+            tracks=tracks,
+            emit_path_base="pending_return_fallback",
+            receiver_confirm_start_frame=pending.first_candidate_frame,
+            receiver_confirm_frames=pending.streak,
+        )
+        self._dbg_gate(
+            f"pending_return:{pending.from_player_id}->{pending.to_player_id}:{frame_index}",
+            frame_index,
+            "[PASS-FSM] pending_return_fallback "
+            f"{pending.from_player_id}->{pending.to_player_id} "
+            f"d={target_d:.1f} disp={disp:.1f} align={align:.2f}",
+        )
+        self._pending_return_pass = None
+        return event
+
     def _clear_flight(self) -> None:
         self._flight = None
         self._recv_tid = None
@@ -2310,6 +2879,37 @@ class PassDetector:
             return True, "overlap_low_displacement dribble_overlap_not_pass"
 
         return False, ""
+
+    def _source_retains_control_guard_fsm(
+        self,
+        cand: _FlightCandidate,
+        receiver_id: int,
+        frame_index: int,
+        possession: PossessionState,
+    ) -> tuple[bool, str]:
+        cfg = self._config
+        if not cfg.pass_dribble_guard_enabled:
+            return False, ""
+        if possession.track_id != cand.from_player_id:
+            return False, ""
+
+        recv_lb, recv_vt, _recv_bo = self._touch_hist_recv_metrics(
+            receiver_id, cand.start_frame, frame_index
+        )
+        if recv_lb >= 1 or recv_vt >= cfg.pass_valid_touch_min_frames:
+            return False, ""
+
+        lo = max(
+            cand.start_frame,
+            frame_index - max(5, cfg.pass_dribble_guard_window_frames),
+        )
+        src_lb, src_vt, _src_bo = self._touch_hist_recv_metrics(
+            cand.from_player_id, lo, frame_index
+        )
+        if src_lb < 1 and src_vt < cfg.pass_valid_touch_min_frames:
+            return False, ""
+
+        return True, "source_retains_control receiver_unconfirmed"
 
     def _touch_pair_dribble_skip(self, a: _TouchEpisode, b: _TouchEpisode) -> bool:
         cfg = self._config
@@ -3864,6 +4464,19 @@ class PassDetector:
             receiver_id, cand, frame_index
         )
 
+        source_retained, source_retained_rst = self._source_retains_control_guard_fsm(
+            cand, receiver_id, frame_index, possession
+        )
+        if source_retained:
+            status = source_retained_rst or "source_retains_control receiver_unconfirmed"
+            self._print_pass_decision_suppressed(
+                frame_index=frame_index,
+                cand_from=cand.from_player_id,
+                cand_to=receiver_id,
+                reason=status,
+            )
+            return None
+
         dribble_blocked, dribble_rst = self._dribble_overlap_guard_fsm(
             cand, receiver_id, frame_index, gx
         )
@@ -3994,9 +4607,28 @@ class PassDetector:
             bbox_only_guard_status=bbox_guard_stat,
             receiver_bbox_intermediate_raw=receiver_bbox_intermediate_raw,
         )
+        if self._short_interception_duel_should_suppress(event):
+            self._print_pass_decision_suppressed(
+                frame_index=frame_index,
+                cand_from=cand.from_player_id,
+                cand_to=receiver_id,
+                reason="short_interception_duel_not_pass",
+            )
+            return None
         self._try_replace_weak_primary_source_via_valid_touch(
             event, cand, track_to_team, frame_index
         )
+        rt = self._same_team_retarget_after_source_recovery(
+            event=event,
+            cand=cand,
+            receiver_id=receiver_id,
+            frame_index=frame_index,
+            tracks=tracks,
+            ball_xy=gx,
+            track_to_team=track_to_team,
+        )
+        if rt is not None:
+            receiver_id = rt
         self._next_event_id += 1
         self._apply_emit_shared_state(
             frame_index, cand.from_player_id, receiver_id, clear_fsm_flight=True
@@ -4088,7 +4720,11 @@ class PassDetector:
         ev = self._pending_weak_chain_event
         if ev is None:
             return False
-        win = self._config.pass_bbox_only_chain_window_frames
+        cfg = self._config
+        win = max(
+            cfg.pass_bbox_only_chain_window_frames,
+            cfg.pass_chain_retarget_window_frames,
+        )
         return frame_index - ev.end_frame > win
 
     def _release_expired_pending_weak_chain(
@@ -4114,14 +4750,26 @@ class PassDetector:
         if second.to_player_id == first.from_player_id:
             return False
         if second.receiver_selection_reason == "owner_switch_handoff":
-            return False
+            if second.duration_frames > 3:
+                return False
         gap = second.start_frame - first.end_frame
-        if gap < 0 or gap > cfg.pass_bbox_only_chain_window_frames:
+        if gap < 0:
+            return False
+        if gap > cfg.pass_bbox_only_chain_window_frames:
             return False
         if not self._event_receiver_is_weak_intermediate_candidate(first):
             return False
         if second.one_touch:
             return True
+        if first.duration_frames > cfg.pass_bbox_only_chain_window_frames:
+            return False
+        if gap > min(6, cfg.pass_bbox_only_chain_window_frames):
+            second_recv = (second.receiver_contact_type or "").lower()
+            second_recv_weak = (
+                second_recv in ("unknown", "bbox_overlap_skim") or "bbox" in second_recv
+            )
+            if not second_recv_weak:
+                return False
         rlab = (second.source_contact_type or "").lower()
         return rlab in ("unknown", "stable_owner", "")
 
@@ -4135,6 +4783,16 @@ class PassDetector:
         first.to_team_id = second.to_team_id
         first.raw_to_team_id = second.raw_to_team_id
         first.raw_to_player_id = second.raw_to_player_id
+        if first.canonical_from_player_id is not None:
+            raw_from = first.from_player_id
+            first.from_player_id = first.canonical_from_player_id
+            first.canonical_from_player_id = None
+            reason_alias = f"chain_source_alias_output:{raw_from}->{first.from_player_id}"
+            first.id_alias_reason = (
+                reason_alias
+                if first.id_alias_reason is None
+                else f"{first.id_alias_reason};{reason_alias}"
+            )
         first.end_frame = second.end_frame
         first.end_time_sec = second.end_time_sec
         first.duration_frames = max(1, first.end_frame - first.start_frame + 1)
@@ -5128,10 +5786,16 @@ class PassDetector:
                 self._last_event_end_frame is not None
                 and switch_frame - self._last_event_end_frame <= handoff_window
             )
+            allow_recent_handoff_source_replace = (
+                recent_handoff_switch
+                and new_owner == cur
+                and prev_owner in preferred_source_ids
+                and prev_owner != to_id
+                and 0 <= rf - switch_frame <= cfg.pass_source_recover_lookback_frames
+            )
             if (
-                not recent_handoff_switch
-                and
-                new_owner == cur
+                (not recent_handoff_switch or allow_recent_handoff_source_replace)
+                and new_owner == cur
                 and prev_owner in preferred_source_ids
                 and prev_owner != to_id
                 and 0 <= rf - switch_frame <= cfg.pass_source_recover_lookback_frames
@@ -6159,6 +6823,16 @@ class PassDetector:
             self._release_expired_pending_weak_chain(frame_index, events)
             if events:
                 return events
+            ret_ev = self._try_emit_pending_return_pass(
+                frame_index=frame_index,
+                timestamp_sec=timestamp_sec,
+                possession=possession,
+                track_to_team=track_to_team,
+                tracks=tracks,
+            )
+            if ret_ev is not None:
+                events.append(ret_ev)
+                return events
 
             owner_switch: Optional[tuple[int, int]] = None
             if self._flight is None and frame_index >= self._cooldown_until_frame:
@@ -6186,6 +6860,18 @@ class PassDetector:
                             track_to_team,
                             tracks,
                         )
+                        return events
+                    ev_prox = self._try_emit_owner_switch_proximity_fallback(
+                        prev_owner=prev_owner,
+                        new_owner=new_owner,
+                        frame_index=frame_index,
+                        timestamp_sec=timestamp_sec,
+                        possession=possession,
+                        track_to_team=track_to_team,
+                        tracks=tracks,
+                    )
+                    if ev_prox is not None:
+                        events.append(ev_prox)
                         return events
 
             if self._flight is not None:
