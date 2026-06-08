@@ -29,7 +29,7 @@ class Settings:
     inference_imgsz: int = 1280
     """Letterbox size for both ``track`` and ball-only ``predict`` (larger helps tiny ball)."""
 
-    ball_conf_threshold: float = 0.40
+    ball_conf_threshold: float = 0.10
     """Lower threshold on ball-class-only ``predict`` pass for recall / yellow debug overlay."""
 
     ball_max_gap_frames: int = 15
@@ -200,6 +200,18 @@ class Settings:
     roboflow_api_key_env: str = "ROBOFLOW_API_KEY"
     """Environment variable name read for the Roboflow API key (used by the
     download helper and by the hosted inference fallback)."""
+
+    shot_min_speed_kph: float = 50.0
+    """Minimum ball velocity in km/h to trigger a shot event in Field mode."""
+
+    shot_min_rel_speed: float = 0.45
+    """Minimum relative ball velocity (speed/average_player_height per frame) in Normal mode."""
+
+    shot_display_frames: int = 30
+    """Number of frames to display the 'SHOT!' overlay and trajectory line."""
+
+    shot_max_start_dist_ratio: float = 1.2
+    """Max distance from ball to player (as a ratio of player height) to register a shot start."""
 
     def __post_init__(self) -> None:
         self.input_video = Path(self.input_video)

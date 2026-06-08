@@ -47,7 +47,11 @@ class ObjectTracker:
         self._prev_player_by_id: dict[int, TrackedInstance] = {}
         self._roi_lost_streak: dict[int, int] = {}
         self._last_ball_bbox: tuple[float, float, float, float] | None = None
+        self._prev_ball_bbox: tuple[float, float, float, float] | None = None
         self._ball_lost_streak: int = 0
+        self._ball_static_streak: int = 0
+        self._static_ball_pos: Optional[tuple[float, float]] = None
+        self._known_static_positions: list[tuple[float, float]] = []
 
     def load(self) -> None:
         """Load Ultralytics weights and build the class-id -> role table."""
@@ -108,7 +112,11 @@ class ObjectTracker:
         self._prev_player_by_id.clear()
         self._roi_lost_streak.clear()
         self._last_ball_bbox = None
+        self._prev_ball_bbox = None
         self._ball_lost_streak = 0
+        self._ball_static_streak = 0
+        self._static_ball_pos = None
+        self._known_static_positions = []
         if self._settings.debug_tracking:
             logger.debug("ObjectTracker.reset()")
 
@@ -165,11 +173,13 @@ class ObjectTracker:
 
         img_h, img_w = frame.shape[:2]
 
-        margin = 15
-        x1 = max(0, int(last_known_bbox[0]) - margin)
-        y1 = max(0, int(last_known_bbox[1]) - margin)
-        x2 = min(img_w, int(last_known_bbox[2]) + margin)
-        y2 = min(img_h, int(last_known_bbox[3]) + margin)
+        roi_size = getattr(self._settings, "ball_roi_size", 300)
+        cx = 0.5 * (last_known_bbox[0] + last_known_bbox[2])
+        cy = 0.5 * (last_known_bbox[1] + last_known_bbox[3])
+        x1 = max(0, int(cx - roi_size // 2))
+        y1 = max(0, int(cy - roi_size // 2))
+        x2 = min(img_w, int(cx + roi_size // 2))
+        y2 = min(img_h, int(cy + roi_size // 2))
 
         if x2 - x1 < 10 or y2 - y1 < 10:
             return None
@@ -203,11 +213,11 @@ class ObjectTracker:
             box_w = bx2 - bx1
             box_h = by2 - by1
 
-            if box_w <= 3 or box_h <= 3 or box_w > 35 or box_h > 35:
+            if box_w <= 3 or box_h <= 3 or box_w > 65 or box_h > 65:
                 continue
 
             aspect_ratio = box_w / box_h
-            if aspect_ratio < 0.8 or aspect_ratio > 1.25:
+            if aspect_ratio < 0.3 or aspect_ratio > 3.3:
                 continue
 
             if conf > highest_conf:
@@ -232,6 +242,7 @@ class ObjectTracker:
         if self._model is None:
             raise RuntimeError("ObjectTracker.load() must be called before update().")
 
+        self._prev_ball_bbox = self._last_ball_bbox
         raw_balls: tuple[RawBallDetection, ...] = ()
         if not self._settings.debug_persons:
             raw_balls = self._raw_ball_predict(frame)
@@ -262,7 +273,27 @@ class ObjectTracker:
                 break
 
         if not ball_found_in_primary and raw_balls:
-            best_raw = max(raw_balls, key=lambda b: b.confidence)
+            if self._last_ball_bbox is not None:
+                last_cx = 0.5 * (self._last_ball_bbox[0] + self._last_ball_bbox[2])
+                last_cy = 0.5 * (self._last_ball_bbox[1] + self._last_ball_bbox[3])
+                
+                candidates = []
+                for rb in raw_balls:
+                    rcx = 0.5 * (rb.xyxy[0] + rb.xyxy[2])
+                    rcy = 0.5 * (rb.xyxy[1] + rb.xyxy[3])
+                    dist = float(np.hypot(rcx - last_cx, rcy - last_cy))
+                    
+                    if dist < 250.0 or rb.confidence >= 0.25:
+                        score = rb.confidence - 0.001 * dist
+                        candidates.append((score, rb))
+                
+                if candidates:
+                    best_raw = max(candidates, key=lambda c: c[0])[1]
+                else:
+                    best_raw = max(raw_balls, key=lambda b: b.confidence)
+            else:
+                best_raw = max(raw_balls, key=lambda b: b.confidence)
+
             self._last_ball_bbox = best_raw.xyxy
             ball_found_in_primary = True
 
@@ -329,6 +360,120 @@ class ObjectTracker:
                 timestamp_sec=primary.timestamp_sec,
                 instances=primary.instances + (memory_ball_inst,)
             )
+
+        # 1. Estimate camera pan displacement from prev frame to current frame using players
+        pan_dx = 0.0
+        pan_dy = 0.0
+        player_displacements = []
+        for inst in primary.instances:
+            if inst.role is ObjectRole.PLAYER and inst.track_id >= 0:
+                if inst.track_id in self._prev_player_by_id:
+                    prev_box = self._prev_player_by_id[inst.track_id].xyxy
+                    curr_box = inst.xyxy
+                    prev_cx = 0.5 * (prev_box[0] + prev_box[2])
+                    prev_cy = 0.5 * (prev_box[1] + prev_box[3])
+                    curr_cx = 0.5 * (curr_box[0] + curr_box[2])
+                    curr_cy = 0.5 * (curr_box[1] + curr_box[3])
+                    player_displacements.append((curr_cx - prev_cx, curr_cy - prev_cy))
+        
+        if len(player_displacements) >= 3:
+            pan_dx = float(np.median([d[0] for d in player_displacements]))
+            pan_dy = float(np.median([d[1] for d in player_displacements]))
+
+        # Update all known static positions with camera pan
+        if self._static_ball_pos is not None:
+            self._static_ball_pos = (self._static_ball_pos[0] + pan_dx, self._static_ball_pos[1] + pan_dy)
+        self._known_static_positions = [
+            (x + pan_dx, y + pan_dy) for x, y in getattr(self, '_known_static_positions', [])
+        ]
+
+        # 2. Filter out static ball false positives (like penalty spots)
+        ball_inst = None
+        for inst in primary.instances:
+            if inst.role is ObjectRole.BALL:
+                ball_inst = inst
+                break
+
+        if ball_inst is not None:
+            curr_box = ball_inst.xyxy
+            curr_cx = 0.5 * (curr_box[0] + curr_box[2])
+            curr_cy = 0.5 * (curr_box[1] + curr_box[3])
+            
+            # Check against all previously known static positions first
+            known_statics = getattr(self, '_known_static_positions', [])
+            is_known_static = False
+            for sx, sy in known_statics:
+                if float(np.hypot(curr_cx - sx, curr_cy - sy)) < 15.0:
+                    is_known_static = True
+                    break
+
+            if is_known_static:
+                # Immediately discard — this is a known static false positive
+                logger.info(
+                    "FILTER: Instantly discarded known static false positive at frame %d pos=(%.0f,%.0f)",
+                    frame_index, curr_cx, curr_cy
+                )
+                new_instances = tuple(inst for inst in primary.instances if inst.role is not ObjectRole.BALL)
+                primary = FrameTracks(
+                    frame_index=primary.frame_index,
+                    timestamp_sec=primary.timestamp_sec,
+                    instances=new_instances
+                )
+                self._last_ball_bbox = None
+            else:
+                # Check if the ball is stationary (building up streak)
+                matched_static = False
+                if self._static_ball_pos is not None:
+                    dist_to_static = float(np.hypot(curr_cx - self._static_ball_pos[0], curr_cy - self._static_ball_pos[1]))
+                    if dist_to_static < 8.0:
+                        self._ball_static_streak += 1
+                        self._static_ball_pos = (curr_cx, curr_cy)
+                        matched_static = True
+
+                if not matched_static:
+                    if self._prev_ball_bbox is not None:
+                        prev_cx = 0.5 * (self._prev_ball_bbox[0] + self._prev_ball_bbox[2])
+                        prev_cy = 0.5 * (self._prev_ball_bbox[1] + self._prev_ball_bbox[3])
+                        ball_dx = curr_cx - prev_cx
+                        ball_dy = curr_cy - prev_cy
+                        comp_dx = ball_dx - pan_dx
+                        comp_dy = ball_dy - pan_dy
+                        comp_dist = float(np.hypot(comp_dx, comp_dy))
+                        if comp_dist < 5.0:
+                            self._ball_static_streak += 1
+                            self._static_ball_pos = (curr_cx, curr_cy)
+                        else:
+                            self._ball_static_streak = 0
+                            self._static_ball_pos = None
+                    else:
+                        self._ball_static_streak = 0
+                        self._static_ball_pos = None
+
+                # If ball has been static for 3+ frames, it's a pitch marking
+                if self._ball_static_streak > 3:
+                    logger.info(
+                        "FILTER: Discarded static ball false positive (penalty spot?) at frame %d, streak=%d",
+                        frame_index, self._ball_static_streak
+                    )
+                    new_instances = tuple(inst for inst in primary.instances if inst.role is not ObjectRole.BALL)
+                    primary = FrameTracks(
+                        frame_index=primary.frame_index,
+                        timestamp_sec=primary.timestamp_sec,
+                        instances=new_instances
+                    )
+                    self._last_ball_bbox = None
+                    # Remember this position permanently
+                    if not hasattr(self, '_known_static_positions'):
+                        self._known_static_positions = []
+                    already_known = any(
+                        float(np.hypot(curr_cx - sx, curr_cy - sy)) < 20.0
+                        for sx, sy in self._known_static_positions
+                    )
+                    if not already_known:
+                        self._known_static_positions.append((curr_cx, curr_cy))
+                        logger.info("FILTER: Registered new known static position at (%.0f, %.0f)", curr_cx, curr_cy)
+        else:
+            self._ball_static_streak = 0
 
         if self._settings.debug_persons or not self._settings.roi_recovery_enabled:
             # Like --debug_persons: emit raw tracker output so that a player
@@ -695,4 +840,8 @@ class ObjectTracker:
         self._prev_player_by_id.clear()
         self._roi_lost_streak.clear()
         self._last_ball_bbox = None
+        self._prev_ball_bbox = None
         self._ball_lost_streak = 0
+        self._ball_static_streak = 0
+        self._static_ball_pos = None
+        self._known_static_positions = []

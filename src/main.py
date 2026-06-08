@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--ball-conf",
         type=float,
-        default=0.35,
+        default=0.10,
         help="Lower threshold for ball-class-only raw predict pass (yellow debug boxes).",
     )
     p.add_argument(
