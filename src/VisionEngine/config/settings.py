@@ -118,6 +118,15 @@ class Settings:
     throwin_debug: bool = False
     """Print throw-in detector diagnostics and emitted events to terminal."""
 
+    corner_detection_enabled: bool = False
+    """When True, run the separate corner-kick event detector."""
+
+    corner_events_jsonl_path: Optional[Path] = None
+    """Destination JSONL for corner event rows."""
+
+    corner_debug: bool = False
+    """Print corner detector diagnostics and emitted events to terminal."""
+
     pass_min_possession_frames: int = 3
     pass_min_pass_frames: int = 2
     pass_max_pass_frames: int = 90
@@ -422,3 +431,5 @@ class Settings:
             self.pass_events_jsonl_path = Path(self.pass_events_jsonl_path)
         if self.throwin_events_jsonl_path is not None:
             self.throwin_events_jsonl_path = Path(self.throwin_events_jsonl_path)
+        if self.corner_events_jsonl_path is not None:
+            self.corner_events_jsonl_path = Path(self.corner_events_jsonl_path)

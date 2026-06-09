@@ -202,6 +202,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print throw-in detector diagnostics and emitted throw-in events.",
     )
     p.add_argument(
+        "--corner-detection",
+        action="store_true",
+        help="Enable corner-kick event detection (separate from pass/throw-in detection).",
+    )
+    p.add_argument(
+        "--corners-jsonl",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path for corner events JSONL. When --corner-detection is "
+            "set and this is omitted, defaults to <output_video_stem>_corners.jsonl."
+        ),
+    )
+    p.add_argument(
+        "--corner-debug",
+        action="store_true",
+        help="Print corner detector diagnostics and emitted corner events.",
+    )
+    p.add_argument(
         "--pass-min-possession-frames",
         type=int,
         default=3,
@@ -949,6 +968,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         throwin_events_jsonl = None
 
+    corner_detection = bool(args.corner_detection)
+    if corner_detection:
+        if args.corners_jsonl is not None:
+            corner_events_jsonl = args.corners_jsonl.expanduser().resolve()
+        else:
+            corner_events_jsonl = output_path.with_name(
+                f"{output_path.stem}_corners.jsonl"
+            )
+    else:
+        corner_events_jsonl = None
+
     settings = Settings(
         input_video=video_path,
         output_video=output_path,
@@ -990,6 +1020,9 @@ def main(argv: list[str] | None = None) -> int:
         throwin_detection_enabled=throwin_detection,
         throwin_events_jsonl_path=throwin_events_jsonl,
         throwin_debug=bool(args.throwin_debug),
+        corner_detection_enabled=corner_detection,
+        corner_events_jsonl_path=corner_events_jsonl,
+        corner_debug=bool(args.corner_debug),
         pass_min_possession_frames=args.pass_min_possession_frames,
         pass_min_pass_frames=args.pass_min_pass_frames,
         pass_max_pass_frames=args.pass_max_pass_frames,
@@ -1158,6 +1191,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Tracks log: {settings.tracks_log_path}")
     if settings.pass_detection_enabled and settings.pass_events_jsonl_path:
         print(f"Pass events JSONL (configured): {settings.pass_events_jsonl_path}")
+    if settings.corner_detection_enabled and settings.corner_events_jsonl_path:
+        print(f"Corner events JSONL (configured): {settings.corner_events_jsonl_path}")
     return 0
 
 

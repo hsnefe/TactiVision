@@ -6,6 +6,11 @@ from collections import deque
 from pathlib import Path
 
 from VisionEngine.EventAnalytics.camera_pan import CameraPanEstimator
+from VisionEngine.EventAnalytics.corner_detector import (
+    CornerDetector,
+    CornerDetectorConfig,
+    CornerEvent,
+)
 from VisionEngine.EventAnalytics.pass_detector import (
     PassDetector,
     PassDetectorConfig,
@@ -22,6 +27,7 @@ from VisionEngine.clustering.team_assigner import TeamAssigner
 from VisionEngine.config.settings import Settings
 from VisionEngine.debug.player_tracking_debugger import PlayerTrackingDebugger
 from VisionEngine.io.pass_event_log import PassEventJsonlWriter
+from VisionEngine.io.corner_event_log import CornerEventJsonlWriter
 from VisionEngine.io.throwin_event_log import ThrowInEventJsonlWriter
 from VisionEngine.io.track_log import TrackingJsonlWriter
 from VisionEngine.io.video import VideoReader, VideoWriter
@@ -57,6 +63,14 @@ class AnalysisPipeline:
         self._throwin_event_total: int = 0
         self._throwin_recent: deque[ThrowInEvent] = deque(maxlen=3)
         self._throwin_events_seen: list[ThrowInEvent] = []
+        self._corner_detector: CornerDetector | None = None
+        self._corner_event_total: int = 0
+        self._corner_recent: deque[CornerEvent] = deque(maxlen=3)
+        self._corner_events_seen: list[CornerEvent] = []
+        if self._settings.corner_detection_enabled and not self._settings.debug_persons:
+            self._corner_detector = CornerDetector(
+                CornerDetectorConfig(debug=self._settings.corner_debug)
+            )
         if self._settings.throwin_detection_enabled and not self._settings.debug_persons:
             self._throwin_detector = ThrowInDetector(
                 ThrowInDetectorConfig(debug=self._settings.throwin_debug)
@@ -435,6 +449,11 @@ class AnalysisPipeline:
         self._field.configure_from_settings()
         if self._pass_detector is not None:
             self._pass_detector.reset()
+        if self._corner_detector is not None:
+            self._corner_detector.reset()
+        self._corner_event_total = 0
+        self._corner_recent.clear()
+        self._corner_events_seen.clear()
         self._pass_event_total = 0
         self._pass_recent.clear()
         self._pass_events_seen.clear()
@@ -462,6 +481,16 @@ class AnalysisPipeline:
             )
             throwin_writer.open()
 
+        corner_writer: CornerEventJsonlWriter | None = None
+        if (
+            self._corner_detector is not None
+            and self._settings.corner_events_jsonl_path is not None
+        ):
+            corner_writer = CornerEventJsonlWriter(
+                self._settings.corner_events_jsonl_path
+            )
+            corner_writer.open()
+
         reader = VideoReader(inp)
         reader.open()
         try:
@@ -482,6 +511,7 @@ class AnalysisPipeline:
                     log_writer,
                     pass_writer,
                     throwin_writer,
+                    corner_writer,
                 )
                 if self._pass_detector is not None:
                     fi = frames_done - 1 if frames_done > 0 else 0
@@ -507,6 +537,8 @@ class AnalysisPipeline:
                 pass_writer.close()
             if throwin_writer is not None:
                 throwin_writer.close()
+            if corner_writer is not None:
+                corner_writer.close()
             self._tracker.close()
 
         return out
@@ -519,6 +551,7 @@ class AnalysisPipeline:
         log_writer: TrackingJsonlWriter | None,
         pass_writer: PassEventJsonlWriter | None,
         throwin_writer: ThrowInEventJsonlWriter | None,
+        corner_writer: CornerEventJsonlWriter | None,
     ) -> int:
         """Decode & render every frame; return number of frames written."""
 
@@ -610,6 +643,30 @@ class AnalysisPipeline:
                                 flush=True,
                             )
 
+            if self._corner_detector is not None and not self._settings.debug_persons:
+                corner_ev = self._corner_detector.update(
+                    frame=frame,
+                    frame_index=frame_index,
+                    timestamp_sec=t_sec,
+                    tracks=tracks,
+                    possession=poss,
+                    track_to_team=team_for_pass,
+                    raw_ball_detections=ft_out.raw_ball_detections,
+                    estimated_ball_center=estimated_ball_center,
+                )
+                if corner_ev:
+                    self._remember_corner_events(corner_ev)
+                    if corner_writer is not None:
+                        corner_writer.write_events(corner_ev)
+                    if self._settings.corner_debug:
+                        for ev in corner_ev:
+                            print(
+                                "[CORNER] "
+                                f"{ev.setup_frame}->{ev.corner_frame} "
+                                f"zone={ev.zone} taker={ev.taker_track_id}",
+                                flush=True,
+                            )
+
             ball_debug = (
                 self._settings.ball_debug_overlay and not self._settings.debug_persons
             )
@@ -649,6 +706,12 @@ class AnalysisPipeline:
         for ev in events:
             self._throwin_recent.append(ev)
 
+    def _remember_corner_events(self, events: list[CornerEvent]) -> None:
+        self._corner_event_total += len(events)
+        self._corner_events_seen.extend(events)
+        for ev in events:
+            self._corner_recent.append(ev)
+
     def _flush_pass_detector_after_frames(
         self,
         frame_index: int,
@@ -685,13 +748,19 @@ class AnalysisPipeline:
             )
         if self._throwin_detector is not None:
             delays.append(12)
+        if self._corner_detector is not None:
+            delays.append(12)
         return max(delays) if delays else 0
 
     def _hud_for_frame(self, frame_index: int) -> str:
         hud = f"frame {frame_index}"
         if self._settings.debug_persons:
             return f"{hud} | debug_persons"
-        if self._pass_detector is None and self._throwin_detector is None:
+        if (
+            self._pass_detector is None
+            and self._throwin_detector is None
+            and self._corner_detector is None
+        ):
             return hud
 
         if self._pass_detector is not None:
@@ -708,6 +777,13 @@ class AnalysisPipeline:
                 if ev.throw_frame <= frame_index
             ]
             hud = f"{hud} | throwins={len(throwins)}"
+        if self._corner_detector is not None:
+            corners = [
+                ev
+                for ev in self._corner_events_seen
+                if ev.corner_frame <= frame_index
+            ]
+            hud = f"{hud} | corners={len(corners)}"
         if visible:
             last = max(visible, key=lambda ev: (ev.end_frame, ev.event_id))
             tp = str(last.to_player_id) if last.to_player_id is not None else "?"
