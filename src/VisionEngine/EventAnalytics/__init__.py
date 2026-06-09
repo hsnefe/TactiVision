@@ -3,6 +3,11 @@
 from VisionEngine.EventAnalytics.camera_pan import CameraPanEstimator
 from VisionEngine.EventAnalytics.pass_detector import PassDetector, PassDetectorConfig, PassEvent
 from VisionEngine.EventAnalytics.possession import PossessionEstimator, PossessionState
+from VisionEngine.EventAnalytics.throwin_detector import (
+    ThrowInDetector,
+    ThrowInDetectorConfig,
+    ThrowInEvent,
+)
 
 __all__ = [
     "CameraPanEstimator",
@@ -11,4 +16,7 @@ __all__ = [
     "PassEvent",
     "PossessionEstimator",
     "PossessionState",
+    "ThrowInDetector",
+    "ThrowInDetectorConfig",
+    "ThrowInEvent",
 ]

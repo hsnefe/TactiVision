@@ -183,6 +183,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--throwin-detection",
+        action="store_true",
+        help="Enable throw-in event detection (separate from pass detection).",
+    )
+    p.add_argument(
+        "--throwins-jsonl",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path for throw-in events JSONL. When --throwin-detection is "
+            "set and this is omitted, defaults to <output_video_stem>_throwins.jsonl."
+        ),
+    )
+    p.add_argument(
+        "--throwin-debug",
+        action="store_true",
+        help="Print throw-in detector diagnostics and emitted throw-in events.",
+    )
+    p.add_argument(
         "--pass-min-possession-frames",
         type=int,
         default=3,
@@ -919,6 +938,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         pass_events_jsonl = None
 
+    throwin_detection = bool(args.throwin_detection)
+    if throwin_detection:
+        if args.throwins_jsonl is not None:
+            throwin_events_jsonl = args.throwins_jsonl.expanduser().resolve()
+        else:
+            throwin_events_jsonl = output_path.with_name(
+                f"{output_path.stem}_throwins.jsonl"
+            )
+    else:
+        throwin_events_jsonl = None
+
     settings = Settings(
         input_video=video_path,
         output_video=output_path,
@@ -957,6 +987,9 @@ def main(argv: list[str] | None = None) -> int:
         ball_roi_scan_debug=bool(args.ball_roi_scan_debug),
         pass_detection_enabled=pass_detection,
         pass_events_jsonl_path=pass_events_jsonl,
+        throwin_detection_enabled=throwin_detection,
+        throwin_events_jsonl_path=throwin_events_jsonl,
+        throwin_debug=bool(args.throwin_debug),
         pass_min_possession_frames=args.pass_min_possession_frames,
         pass_min_pass_frames=args.pass_min_pass_frames,
         pass_max_pass_frames=args.pass_max_pass_frames,

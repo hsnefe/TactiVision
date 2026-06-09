@@ -109,6 +109,15 @@ class Settings:
     pass_events_jsonl_path: Optional[Path] = None
     """Destination JSONL for :class:`~VisionEngine.EventAnalytics.pass_detector.PassEvent` rows."""
 
+    throwin_detection_enabled: bool = False
+    """When True, run the separate throw-in event detector."""
+
+    throwin_events_jsonl_path: Optional[Path] = None
+    """Destination JSONL for throw-in event rows."""
+
+    throwin_debug: bool = False
+    """Print throw-in detector diagnostics and emitted events to terminal."""
+
     pass_min_possession_frames: int = 3
     pass_min_pass_frames: int = 2
     pass_max_pass_frames: int = 90
@@ -411,3 +420,5 @@ class Settings:
             self.tracks_log_path = Path(self.tracks_log_path)
         if self.pass_events_jsonl_path is not None:
             self.pass_events_jsonl_path = Path(self.pass_events_jsonl_path)
+        if self.throwin_events_jsonl_path is not None:
+            self.throwin_events_jsonl_path = Path(self.throwin_events_jsonl_path)

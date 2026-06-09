@@ -13,10 +13,16 @@ from VisionEngine.EventAnalytics.pass_detector import (
     format_pass_terminal_for_debug,
 )
 from VisionEngine.EventAnalytics.possession import PossessionEstimator
+from VisionEngine.EventAnalytics.throwin_detector import (
+    ThrowInDetector,
+    ThrowInDetectorConfig,
+    ThrowInEvent,
+)
 from VisionEngine.clustering.team_assigner import TeamAssigner
 from VisionEngine.config.settings import Settings
 from VisionEngine.debug.player_tracking_debugger import PlayerTrackingDebugger
 from VisionEngine.io.pass_event_log import PassEventJsonlWriter
+from VisionEngine.io.throwin_event_log import ThrowInEventJsonlWriter
 from VisionEngine.io.track_log import TrackingJsonlWriter
 from VisionEngine.io.video import VideoReader, VideoWriter
 from VisionEngine.metrics.homography import FieldMapper
@@ -47,6 +53,14 @@ class AnalysisPipeline:
         self._pass_event_total: int = 0
         self._pass_recent: deque[PassEvent] = deque(maxlen=3)
         self._pass_events_seen: list[PassEvent] = []
+        self._throwin_detector: ThrowInDetector | None = None
+        self._throwin_event_total: int = 0
+        self._throwin_recent: deque[ThrowInEvent] = deque(maxlen=3)
+        self._throwin_events_seen: list[ThrowInEvent] = []
+        if self._settings.throwin_detection_enabled and not self._settings.debug_persons:
+            self._throwin_detector = ThrowInDetector(
+                ThrowInDetectorConfig(debug=self._settings.throwin_debug)
+            )
         if self._settings.pass_detection_enabled and not self._settings.debug_persons:
             self._pass_detector = PassDetector(
                 PassDetectorConfig(
@@ -438,6 +452,16 @@ class AnalysisPipeline:
             pass_writer = PassEventJsonlWriter(self._settings.pass_events_jsonl_path)
             pass_writer.open()
 
+        throwin_writer: ThrowInEventJsonlWriter | None = None
+        if (
+            self._throwin_detector is not None
+            and self._settings.throwin_events_jsonl_path is not None
+        ):
+            throwin_writer = ThrowInEventJsonlWriter(
+                self._settings.throwin_events_jsonl_path
+            )
+            throwin_writer.open()
+
         reader = VideoReader(inp)
         reader.open()
         try:
@@ -451,7 +475,14 @@ class AnalysisPipeline:
             )
             writer.open()
             try:
-                frames_done = self._process_frames(reader, writer, fps, log_writer, pass_writer)
+                frames_done = self._process_frames(
+                    reader,
+                    writer,
+                    fps,
+                    log_writer,
+                    pass_writer,
+                    throwin_writer,
+                )
                 if self._pass_detector is not None:
                     fi = frames_done - 1 if frames_done > 0 else 0
                     ts = fi / fps if frames_done > 0 else None
@@ -474,6 +505,8 @@ class AnalysisPipeline:
                 log_writer.close()
             if pass_writer is not None:
                 pass_writer.close()
+            if throwin_writer is not None:
+                throwin_writer.close()
             self._tracker.close()
 
         return out
@@ -485,6 +518,7 @@ class AnalysisPipeline:
         fps: float,
         log_writer: TrackingJsonlWriter | None,
         pass_writer: PassEventJsonlWriter | None,
+        throwin_writer: ThrowInEventJsonlWriter | None,
     ) -> int:
         """Decode & render every frame; return number of frames written."""
 
@@ -550,8 +584,31 @@ class AnalysisPipeline:
                         pass_writer.write_events(new_ev)
                     if self._settings.pass_debug:
                         for ev in new_ev:
-                            if not ev.suppress_duplicate_pass_terminal:
-                                print(format_pass_terminal_for_debug(ev), flush=True)
+                                if not ev.suppress_duplicate_pass_terminal:
+                                    print(format_pass_terminal_for_debug(ev), flush=True)
+
+            if self._throwin_detector is not None and not self._settings.debug_persons:
+                throwin_ev = self._throwin_detector.update(
+                    frame=frame,
+                    frame_index=frame_index,
+                    timestamp_sec=t_sec,
+                    tracks=tracks,
+                    possession=poss,
+                    track_to_team=team_for_pass,
+                    estimated_ball_center=estimated_ball_center,
+                )
+                if throwin_ev:
+                    self._remember_throwin_events(throwin_ev)
+                    if throwin_writer is not None:
+                        throwin_writer.write_events(throwin_ev)
+                    if self._settings.throwin_debug:
+                        for ev in throwin_ev:
+                            print(
+                                "[THROWIN] "
+                                f"{ev.out_frame}->{ev.throw_frame} "
+                                f"side={ev.side} thrower={ev.thrower_track_id}",
+                                flush=True,
+                            )
 
             ball_debug = (
                 self._settings.ball_debug_overlay and not self._settings.debug_persons
@@ -586,6 +643,12 @@ class AnalysisPipeline:
         for ev in events:
             self._pass_recent.append(ev)
 
+    def _remember_throwin_events(self, events: list[ThrowInEvent]) -> None:
+        self._throwin_event_total += len(events)
+        self._throwin_events_seen.extend(events)
+        for ev in events:
+            self._throwin_recent.append(ev)
+
     def _flush_pass_detector_after_frames(
         self,
         frame_index: int,
@@ -608,26 +671,43 @@ class AnalysisPipeline:
                     print(format_pass_terminal_for_debug(ev), flush=True)
 
     def _pass_render_delay_frames(self) -> int:
-        if self._pass_detector is None or self._settings.debug_persons:
+        if self._settings.debug_persons:
             return 0
-        return max(
-            0,
-            int(self._settings.pass_candidate_timeout_frames)
-            + int(self._settings.pass_receiver_confirm_frames)
-            + 4,
-        )
+        delays: list[int] = []
+        if self._pass_detector is not None:
+            delays.append(
+                max(
+                    0,
+                    int(self._settings.pass_candidate_timeout_frames)
+                    + int(self._settings.pass_receiver_confirm_frames)
+                    + 4,
+                )
+            )
+        if self._throwin_detector is not None:
+            delays.append(12)
+        return max(delays) if delays else 0
 
     def _hud_for_frame(self, frame_index: int) -> str:
         hud = f"frame {frame_index}"
         if self._settings.debug_persons:
             return f"{hud} | debug_persons"
-        if self._pass_detector is None:
+        if self._pass_detector is None and self._throwin_detector is None:
             return hud
 
-        visible = [
-            ev for ev in self._pass_events_seen if ev.end_frame <= frame_index
-        ]
-        hud = f"{hud} | passes={len(visible)}"
+        if self._pass_detector is not None:
+            visible = [
+                ev for ev in self._pass_events_seen if ev.end_frame <= frame_index
+            ]
+            hud = f"{hud} | passes={len(visible)}"
+        else:
+            visible = []
+        if self._throwin_detector is not None:
+            throwins = [
+                ev
+                for ev in self._throwin_events_seen
+                if ev.throw_frame <= frame_index
+            ]
+            hud = f"{hud} | throwins={len(throwins)}"
         if visible:
             last = max(visible, key=lambda ev: (ev.end_frame, ev.event_id))
             tp = str(last.to_player_id) if last.to_player_id is not None else "?"
