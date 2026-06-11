@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from VisionEngine.EventAnalytics.duel import DuelState
+from VisionEngine.EventAnalytics.goal import GoalState
 from VisionEngine.EventAnalytics.possession import PossessionState
 from VisionEngine.EventAnalytics.shot import ShotState
 from VisionEngine.schemas.ball_types import RawBallDetection
@@ -35,6 +36,7 @@ class AnnotationRenderer:
         possession: PossessionState,
         duel_state: DuelState,
         shot_state: ShotState,
+        goal_state: GoalState,
         hud_text: Optional[str] = None,
         *,
         raw_ball_detections: tuple[RawBallDetection, ...] = (),
@@ -189,5 +191,92 @@ class AnnotationRenderer:
                 end_pt = (int(traj[-1][0]), int(traj[-1][1]))
                 cv2.circle(out, end_pt, 8, (0, 255, 255), -1, cv2.LINE_AA)
                 cv2.circle(out, end_pt, 12, (0, 165, 255), 2, cv2.LINE_AA)
+
+        # ── GOAL OVERLAY ──
+        if goal_state.is_goal:
+            out = self._draw_goal_overlay(out, goal_state, tracks)
+
+        return out
+
+    def _draw_goal_overlay(
+        self,
+        frame: np.ndarray,
+        goal_state: GoalState,
+        tracks: FrameTracks,
+    ) -> np.ndarray:
+        """Draw a premium 'GOAL!' overlay with dark band, large text, and scorer info."""
+        h, w = frame.shape[:2]
+        out = frame.copy()
+
+        # Semi-transparent dark band across the center
+        band_h = 120
+        band_y1 = (h // 2) - (band_h // 2)
+        band_y2 = band_y1 + band_h
+        overlay = out.copy()
+        cv2.rectangle(overlay, (0, band_y1), (w, band_y2), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, out, 0.4, 0, out)
+
+        # Top and bottom gold accent lines
+        cv2.line(out, (0, band_y1), (w, band_y1), (0, 215, 255), 3, cv2.LINE_AA)
+        cv2.line(out, (0, band_y2), (w, band_y2), (0, 215, 255), 3, cv2.LINE_AA)
+
+        # Large "GOAL!" text centered
+        goal_text = "GOAL!"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 3.0
+        thickness = 10
+
+        (tw, th), baseline = cv2.getTextSize(goal_text, font, scale, thickness)
+        text_x = (w - tw) // 2
+        text_y = (h // 2) + (th // 2)
+
+        # Shadow / outline layers for depth
+        cv2.putText(out, goal_text, (text_x + 3, text_y + 3), font, scale, (0, 0, 0), thickness + 4, cv2.LINE_AA)
+        # Outer glow (gold)
+        cv2.putText(out, goal_text, (text_x, text_y), font, scale, (0, 180, 255), thickness + 2, cv2.LINE_AA)
+        # Inner bright white-gold
+        cv2.putText(out, goal_text, (text_x, text_y), font, scale, (0, 255, 255), thickness, cv2.LINE_AA)
+
+        # Scorer info below the band
+        if goal_state.team_id is not None and goal_state.scorer_id is not None:
+            scorer_txt = f"Scorer: Team {goal_state.team_id} | Player #{goal_state.scorer_id}"
+        elif goal_state.team_id is not None:
+            scorer_txt = f"Scorer: Team {goal_state.team_id}"
+        else:
+            scorer_txt = ""
+
+        if scorer_txt:
+            s_scale = 0.8
+            s_thick = 2
+            (sw, sh), _ = cv2.getTextSize(scorer_txt, font, s_scale, s_thick)
+            sx = (w - sw) // 2
+            sy = band_y2 + 35
+
+            cv2.putText(out, scorer_txt, (sx + 2, sy + 2), font, s_scale, (0, 0, 0), s_thick + 2, cv2.LINE_AA)
+            cv2.putText(out, scorer_txt, (sx, sy), font, s_scale, (0, 215, 255), s_thick, cv2.LINE_AA)
+
+        # Highlight scorer on the field
+        if goal_state.scorer_id is not None:
+            for inst in tracks.instances:
+                if inst.track_id == goal_state.scorer_id:
+                    x1, y1, x2, y2 = inst.xyxy
+                    cx = int((x1 + x2) / 2)
+                    cy = int((y1 + y2) / 2)
+                    # Triple ring spotlight
+                    cv2.circle(out, (cx, cy), 45, (0, 0, 0), 4, cv2.LINE_AA)
+                    cv2.circle(out, (cx, cy), 45, (0, 215, 255), 2, cv2.LINE_AA)
+                    cv2.circle(out, (cx, cy), 55, (0, 180, 255), 1, cv2.LINE_AA)
+                    # Label
+                    cv2.putText(
+                        out,
+                        "SCORER",
+                        (int(x1) - 5, int(y1) - 15),
+                        font,
+                        0.7,
+                        (0, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    break
 
         return out

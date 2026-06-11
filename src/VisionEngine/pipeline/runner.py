@@ -9,6 +9,7 @@ import numpy as np
 
 from VisionEngine.EventAnalytics.camera_pan import CameraPanEstimator
 from VisionEngine.EventAnalytics.duel import DuelEstimator
+from VisionEngine.EventAnalytics.goal import GoalEstimator
 from VisionEngine.EventAnalytics.possession import PossessionEstimator
 from VisionEngine.EventAnalytics.shot import ShotEstimator
 from VisionEngine.clustering.team_assigner import TeamAssigner
@@ -35,6 +36,7 @@ class AnalysisPipeline:
         self._possession = PossessionEstimator(settings)
         self._duel_estimator = DuelEstimator(settings)
         self._shot_estimator = ShotEstimator(settings)
+        self._goal_estimator = GoalEstimator(settings)
         self._camera_pan = CameraPanEstimator(settings)
         self._field = FieldMapper(settings)
         self._renderer = AnnotationRenderer()
@@ -76,6 +78,7 @@ class AnalysisPipeline:
         self._possession.reset()
         self._duel_estimator.reset()
         self._shot_estimator.reset()
+        self._goal_estimator.reset()
         self._camera_pan.reset()
         self._field.reset()
         self._field.configure_from_settings()
@@ -155,6 +158,7 @@ class AnalysisPipeline:
                 poss = self._possession.update(frame, tracks, track_to_team)
                 duel_state = self._duel_estimator.update(frame, tracks, track_to_team, poss, estimated_ball_center)
                 shot_state = self._shot_estimator.update(frame, tracks, track_to_team, poss, estimated_ball_center, field_mapper=self._field)
+                goal_state = self._goal_estimator.update(frame, tracks, track_to_team, poss, shot_state, field_mapper=self._field)
             else:
                 track_to_team = self._teams.update(frame, tracks)
                 id_remap = self._teams.track_id_remap
@@ -163,6 +167,7 @@ class AnalysisPipeline:
                 poss = self._possession.update(frame, tracks, track_to_team)
                 duel_state = self._duel_estimator.update(frame, tracks, track_to_team, poss, estimated_ball_center)
                 shot_state = self._shot_estimator.update(frame, tracks, track_to_team, poss, estimated_ball_center, field_mapper=self._field)
+                goal_state = self._goal_estimator.update(frame, tracks, track_to_team, poss, shot_state, field_mapper=self._field)
             team_enabled = (
                 self._settings.team_classification_enabled
                 and not self._settings.debug_persons
@@ -187,6 +192,7 @@ class AnalysisPipeline:
                 poss,
                 duel_state,
                 shot_state,
+                goal_state,
                 hud_text=hud,
                 raw_ball_detections=ft_out.raw_ball_detections,
                 estimated_ball_center=estimated_ball_center,

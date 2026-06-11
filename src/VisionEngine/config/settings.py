@@ -213,6 +213,18 @@ class Settings:
     shot_max_start_dist_ratio: float = 1.2
     """Max distance from ball to player (as a ratio of player height) to register a shot start."""
 
+    goal_monitor_window: int = 120
+    """Number of frames to monitor after a shot for goal confirmation signals."""
+
+    goal_ball_missing_ratio: float = 0.5
+    """Minimum ratio of ball-missing frames within the monitor window to trigger goal signal."""
+
+    goal_display_frames: int = 90
+    """Number of frames to display the 'GOAL!' overlay."""
+
+    goal_celebration_min_players: int = 3
+    """Minimum number of same-team players clustering together to count as celebration."""
+
     def __post_init__(self) -> None:
         self.input_video = Path(self.input_video)
         self.output_video = Path(self.output_video)
