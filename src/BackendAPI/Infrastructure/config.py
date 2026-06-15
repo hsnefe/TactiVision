@@ -30,6 +30,7 @@ class Settings:
     # VisionEngine
     # MOCK açıkken ağır YOLO pipeline yerine örnek event üretilir (hızlı demo / CI).
     vision_mock: bool = field(default_factory=lambda: _bool("TACTIVISION_MOCK", True))
+    allow_mock_fallback: bool = field(default_factory=lambda: _bool("TACTIVISION_ALLOW_MOCK_FALLBACK", False))
     yolo_model: str = field(default_factory=lambda: os.getenv("TACTIVISION_YOLO_MODEL", "yolo11n.pt"))
     python_exe: str = field(default_factory=lambda: os.getenv("TACTIVISION_PYTHON", ""))
 

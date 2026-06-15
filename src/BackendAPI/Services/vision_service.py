@@ -3,8 +3,9 @@
 İki mod:
   * Gerçek: ``src/main.py`` CLI'ı subprocess olarak çağrılır (--pass-detection),
     üretilen ``*_passes.jsonl`` okunur.
-  * Mock: ağır YOLO bağımlılıkları yoksa ya da TACTIVISION_MOCK=1 ise örnek,
-    gerçekçi event akışı üretilir (uçtan uca demo için).
+  * Mock: TACTIVISION_MOCK=1 ise örnek, gerçekçi event akışı üretilir
+    (uçtan uca demo için). Gerçek modda hata olursa varsayılan olarak
+    mock'a düşülmez; hata job üzerinde görünür.
 """
 
 from __future__ import annotations
@@ -52,13 +53,16 @@ def run_pass_detection(video_path: Path, out_dir: Path, settings: Settings) -> V
 
     python_exe = settings.python_exe or sys.executable
     main_py = settings.root_dir / "src" / "main.py"
+    model_path = Path(settings.yolo_model)
+    if not model_path.is_absolute():
+        model_path = settings.root_dir / model_path
 
     cmd = [
         python_exe,
         str(main_py),
         "--video", str(video_path),
         "--output", str(annotated),
-        "--model", settings.yolo_model,
+        "--model", str(model_path),
         "--pass-detection",
         "--passes-jsonl", str(passes_jsonl),
     ]
@@ -71,13 +75,18 @@ def run_pass_detection(video_path: Path, out_dir: Path, settings: Settings) -> V
             text=True,
             timeout=60 * 60,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        # Bağımlılık/ağırlık yoksa demoyu bozma: mock'a düş.
-        return VisionResult(_mock_events(video_path), used_mock=True)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        if settings.allow_mock_fallback:
+            return VisionResult(_mock_events(video_path), used_mock=True)
+        raise RuntimeError(f"VisionEngine çalıştırılamadı: {exc}") from exc
 
     if proc.returncode != 0 or not passes_jsonl.exists():
-        # Pipeline başarısız (ör. torch/ultralytics kurulu değil) -> mock.
-        return VisionResult(_mock_events(video_path), used_mock=True)
+        if settings.allow_mock_fallback:
+            return VisionResult(_mock_events(video_path), used_mock=True)
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        detail = stderr or stdout or "Pass JSONL üretilmedi."
+        raise RuntimeError(f"VisionEngine gerçek mod hatası: {detail[-2000:]}")
 
     annotated_out = annotated if annotated.exists() else None
     return VisionResult(_read_jsonl(passes_jsonl), used_mock=False, annotated_video=annotated_out)
