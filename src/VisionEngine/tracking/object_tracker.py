@@ -46,6 +46,8 @@ class ObjectTracker:
         self._player_class_ids: list[int] = []
         self._prev_player_by_id: dict[int, TrackedInstance] = {}
         self._roi_lost_streak: dict[int, int] = {}
+        self._last_ball_bbox: tuple[float, float, float, float] | None = None
+        self._ball_lost_streak: int = 0
 
     def load(self) -> None:
         """Load Ultralytics weights and build the class-id -> role table."""
@@ -105,6 +107,8 @@ class ObjectTracker:
     def reset(self) -> None:
         self._prev_player_by_id.clear()
         self._roi_lost_streak.clear()
+        self._last_ball_bbox = None
+        self._ball_lost_streak = 0
         if self._settings.debug_tracking:
             logger.debug("ObjectTracker.reset()")
 
@@ -147,6 +151,78 @@ class ObjectTracker:
             )
         return tuple(out)
 
+    def _scan_ball_roi(
+        self,
+        frame: np.ndarray,
+        last_known_bbox: tuple[float, float, float, float]
+    ) -> tuple[tuple[float, float, float, float], float] | None:
+        """Performs ROI search around the last position if the ball is not found in general search."""
+        if getattr(self._settings, "ball_roi_scan_debug", False):
+            print(
+                f"BİLGİ: Top için ROI taraması tetiklendi! Conf: "
+                f"{getattr(self._settings, 'ball_roi_conf', 0.15)}",
+                flush=True,
+            )
+
+        aux_model = self._aux_model or self._model
+        if not self._ball_class_ids or aux_model is None:
+            return None
+
+        img_h, img_w = frame.shape[:2]
+
+        margin = 15
+        x1 = max(0, int(last_known_bbox[0]) - margin)
+        y1 = max(0, int(last_known_bbox[1]) - margin)
+        x2 = min(img_w, int(last_known_bbox[2]) + margin)
+        y2 = min(img_h, int(last_known_bbox[3]) + margin)
+
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            return None
+
+        roi_img = frame[y1:y2, x1:x2]
+        roi_conf = getattr(self._settings, "ball_roi_conf", 0.15)
+
+        pred = aux_model.predict(
+            source=roi_img,
+            conf=roi_conf,
+            iou=self._settings.iou_threshold,
+            classes=self._ball_class_ids,
+            verbose=False,
+            stream=False,
+        )
+
+        if not pred or len(pred[0].boxes) == 0:
+            return None
+
+        boxes = pred[0].boxes
+        xyxy_np = boxes.xyxy.cpu().numpy().astype(np.float32)
+        conf_np = boxes.conf.cpu().numpy().astype(np.float32)
+
+        best_box = None
+        highest_conf = 0.0
+
+        for i in range(len(conf_np)):
+            conf = float(conf_np[i])
+            bx1, by1, bx2, by2 = float(xyxy_np[i, 0]), float(xyxy_np[i, 1]), float(xyxy_np[i, 2]), float(xyxy_np[i, 3])
+
+            box_w = bx2 - bx1
+            box_h = by2 - by1
+
+            if box_w <= 3 or box_h <= 3 or box_w > 35 or box_h > 35:
+                continue
+
+            aspect_ratio = box_w / box_h
+            if aspect_ratio < 0.8 or aspect_ratio > 1.25:
+                continue
+
+            if conf > highest_conf:
+                highest_conf = conf
+                best_box = (bx1 + x1, by1 + y1, bx2 + x1, by2 + y1)
+
+        if best_box is not None:
+            return best_box, highest_conf
+        return None
+
     def update(
         self,
         frame: np.ndarray,
@@ -182,6 +258,83 @@ class ObjectTracker:
             raise RuntimeError(f"Tracking failed at frame {frame_index}: {e}") from e
 
         primary = self._boxes_to_frame_tracks(results, frame_index, timestamp_sec)
+
+        ball_found_in_primary = False
+        for inst in primary.instances:
+            if inst.role is ObjectRole.BALL:
+                self._last_ball_bbox = inst.xyxy
+                ball_found_in_primary = True
+                break
+
+        if not ball_found_in_primary and raw_balls:
+            best_raw = max(raw_balls, key=lambda b: b.confidence)
+            self._last_ball_bbox = best_raw.xyxy
+            ball_found_in_primary = True
+
+            cid = self._ball_class_ids[0] if self._ball_class_ids else -1
+            yolo_name = self._class_names.get(cid, str(cid))
+
+            recovered_from_raw = TrackedInstance(
+                track_id=-1,
+                xyxy=best_raw.xyxy,
+                confidence=best_raw.confidence,
+                yolo_class_id=cid,
+                yolo_name=yolo_name,
+                role=ObjectRole.BALL
+            )
+            primary = FrameTracks(
+                frame_index=primary.frame_index,
+                timestamp_sec=primary.timestamp_sec,
+                instances=primary.instances + (recovered_from_raw,)
+            )
+
+        if not ball_found_in_primary and getattr(self._settings, "ball_roi_recovery", False) and self._last_ball_bbox is not None:
+            roi_result = self._scan_ball_roi(frame, self._last_ball_bbox)
+            if roi_result is not None:
+                best_box, max_conf = roi_result
+                self._last_ball_bbox = best_box
+                ball_found_in_primary = True
+
+                cid = self._ball_class_ids[0] if self._ball_class_ids else -1
+                yolo_name = self._class_names.get(cid, str(cid))
+
+                recovered_ball_inst = TrackedInstance(
+                    track_id=-1,
+                    xyxy=best_box,
+                    confidence=max_conf,
+                    yolo_class_id=cid,
+                    yolo_name=yolo_name,
+                    role=ObjectRole.BALL
+                )
+                primary = FrameTracks(
+                    frame_index=primary.frame_index,
+                    timestamp_sec=primary.timestamp_sec,
+                    instances=primary.instances + (recovered_ball_inst,)
+                )
+
+        if ball_found_in_primary:
+            self._ball_lost_streak = 0
+        else:
+            self._ball_lost_streak += 1
+
+        if not ball_found_in_primary and self._last_ball_bbox is not None and self._ball_lost_streak <= 4:
+            cid = self._ball_class_ids[0] if self._ball_class_ids else -1
+            yolo_name = self._class_names.get(cid, str(cid))
+
+            memory_ball_inst = TrackedInstance(
+                track_id=-1,
+                xyxy=self._last_ball_bbox,
+                confidence=0.1,
+                yolo_class_id=cid,
+                yolo_name=yolo_name,
+                role=ObjectRole.BALL
+            )
+            primary = FrameTracks(
+                frame_index=primary.frame_index,
+                timestamp_sec=primary.timestamp_sec,
+                instances=primary.instances + (memory_ball_inst,)
+            )
+
         if self._settings.debug_persons or not self._settings.roi_recovery_enabled:
             # Like --debug_persons: emit raw tracker output so that a player
             # reappearing with a new ByteTrack ID is rendered immediately on
@@ -546,3 +699,5 @@ class ObjectTracker:
         self._player_class_ids.clear()
         self._prev_player_by_id.clear()
         self._roi_lost_streak.clear()
+        self._last_ball_bbox = None
+        self._ball_lost_streak = 0

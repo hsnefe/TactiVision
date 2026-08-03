@@ -1,0 +1,8 @@
+# TactiVision Web API (hafif; YOLO/torch'tan bağımsız)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+httpx>=0.27
+edge-tts>=6.1
+# Not: Gerçek pas tespiti için ayrıca requirements.txt (opencv/ultralytics/torch) kurulmalı
+# ve TACTIVISION_MOCK=0 yapılmalıdır. Demo/mock modda bunlara gerek yoktur.
